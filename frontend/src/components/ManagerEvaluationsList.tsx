@@ -7,11 +7,16 @@ import FormLoadingState from './FormLoadingState';
 import { getInitials, StatusBadge, StatusKind } from '../utils/teamStatusHelpers';
 import { formatReviewPeriod } from '../utils/reviewPeriodFormat';
 import { SummaryStatCard, ReviewStatusCard } from './ManagerDashboard';
+import { formatPoints } from './EvaluationSummary';
 import '../styles/managerDashboard.css';
 import '../styles/pageLayout.css';
 import '../styles/teamTable.css';
 
 const { Title, Text } = Typography;
+
+// Value of the Review Period filter's "All Periods" option — never a real
+// period.
+const ALL_OPTION = '__all__';
 
 interface ManagerEvaluationRow extends TeamMemberSubmission {
   managerEvalStatus: StatusKind;
@@ -105,17 +110,27 @@ const ManagerEvaluationsList: React.FC = () => {
   // server-persisted autosave from the evaluation form itself (see
   // useSectionedFormTemplate), so this is visible regardless of which
   // device/browser the manager started the draft on.
+  // A submitted evaluation HR/the CDO sent back shows "Rejected" — the
+  // manager needs to revise and resubmit it.
   const rows: ManagerEvaluationRow[] = managerEvalTeam.map((member) => {
     const hasDraft = !member.submitted && !!member.has_draft;
+    const submittedForPeriod = isManagerEvalSubmittedForPeriod(member);
 
     return {
       ...member,
-      managerEvalStatus: isManagerEvalSubmittedForPeriod(member) ? 'submitted' : hasDraft ? 'draft' : 'not_started',
+      managerEvalStatus: submittedForPeriod
+        ? member.approval_status === 'rejected'
+          ? 'rejected'
+          : 'submitted'
+        : hasDraft
+        ? 'draft'
+        : 'not_started',
       selfEvalSubmitted: isSelfEvalSubmittedForPeriod(selfEvalByEmployeeId.get(member.employee_id)),
     };
   });
 
   const totalCount = rows.length;
+  // A rejected evaluation counts as pending: it's waiting on the manager.
   const submittedCount = rows.filter((row) => row.managerEvalStatus === 'submitted').length;
   const notSubmittedCount = totalCount - submittedCount;
   const selfReviewSubmittedCount = rows.filter((row) => row.selfEvalSubmitted).length;
@@ -151,18 +166,20 @@ const ManagerEvaluationsList: React.FC = () => {
       title: 'Score',
       key: 'score',
       render: (_: unknown, record: ManagerEvaluationRow) => {
-        if (record.managerEvalStatus !== 'submitted' || record.score === undefined || record.max_score === undefined) {
+        const hasSubmission = record.managerEvalStatus === 'submitted' || record.managerEvalStatus === 'rejected';
+        // No points yet (max 0) means HR hasn't scored this form's questions.
+        if (!hasSubmission || record.score === undefined || record.max_score === undefined || record.max_score <= 0) {
           return '—';
         }
-        const percentage = record.max_score > 0 ? Math.round((record.score / record.max_score) * 100) : 0;
-        // Manager Review counts for 80 of the combined Overall Score (see
-        // OverallReviewTab) — shown here as a weighted fraction rather than
-        // the raw score/max_score points, matching EvaluationSummary's donut.
-        // The bar's own fill still reflects the unscaled quality percentage.
-        const weightedScore = Math.round(percentage * 0.8);
+        // Points earned / possible as stored on the submission (e.g. 61.25 /
+        // 85) — the same figures EvaluationSummary's donut and the Overall
+        // Review show. The bar fills to the same share.
+        const percentage = Math.round((record.score / record.max_score) * 100);
         return (
           <div className="score-cell">
-            <div className="score-fraction">{weightedScore} / 80</div>
+            <div className="score-fraction">
+              {formatPoints(record.score)} / {formatPoints(record.max_score)}
+            </div>
             <Progress
               percent={percentage}
               showInfo={false}
@@ -181,7 +198,13 @@ const ManagerEvaluationsList: React.FC = () => {
           return '—';
         }
         const label =
-          record.managerEvalStatus === 'submitted' ? 'View' : record.managerEvalStatus === 'draft' ? 'Continue' : 'Evaluate';
+          record.managerEvalStatus === 'submitted'
+            ? 'View'
+            : record.managerEvalStatus === 'rejected'
+            ? 'Revise'
+            : record.managerEvalStatus === 'draft'
+            ? 'Continue'
+            : 'Evaluate';
         const button = (
           <Button
             type={record.managerEvalStatus === 'submitted' ? 'default' : 'primary'}
@@ -220,18 +243,22 @@ const ManagerEvaluationsList: React.FC = () => {
         <Title level={3} className="app-page-title" style={{ marginBottom: 0 }}>Manager Review</Title>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <Text strong>Review Period:</Text>
+          {/* "All Periods" is a real option (ALL_OPTION), shown when no
+              period is selected — the filter itself still uses undefined. */}
           <Select
-            allowClear
-            placeholder="All Periods"
+            allowClear={selectedReviewPeriod !== undefined}
             style={{ minWidth: 240 }}
-            value={selectedReviewPeriod}
-            onChange={(value) => setSelectedReviewPeriod(value)}
-            options={reviewPeriods.map((period) => ({
-              value: period,
-              label: period === currentReviewPeriod
-                ? `${formatReviewPeriod(period)} (current)`
-                : formatReviewPeriod(period),
-            }))}
+            value={selectedReviewPeriod ?? ALL_OPTION}
+            onChange={(value) => setSelectedReviewPeriod(value === ALL_OPTION ? undefined : value)}
+            options={[
+              { value: ALL_OPTION, label: 'All Periods' },
+              ...reviewPeriods.map((period) => ({
+                value: period,
+                label: period === currentReviewPeriod
+                  ? `${formatReviewPeriod(period)} (current)`
+                  : formatReviewPeriod(period),
+              })),
+            ]}
           />
         </div>
       </div>

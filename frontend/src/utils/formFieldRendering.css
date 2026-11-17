@@ -30,10 +30,23 @@
   outline: none;
 }
 
+/* Assessment textareas (AssessmentTextArea) use antd's autoSize, which sets
+   an inline height matching the content as the user types — these bounds
+   clamp it: 80px when short, growing up to 300px, after which the box
+   scrolls internally. The scrollbar stays hidden until the box is at the
+   300px cap (--at-max, toggled by AssessmentTextArea), since below it the
+   box already fits its text. Submitted (read-only) answers aren't
+   textareas, so they're never capped. */
 textarea.styled-form-input.ant-input {
   height: auto;
-  min-height: 110px;
+  min-height: 80px;
+  max-height: 300px;
+  overflow-y: hidden;
   padding-top: 12px;
+}
+
+textarea.styled-form-input.ant-input.styled-form-input--at-max {
+  overflow-y: auto;
 }
 
 /* Radio groups aren't boxed inputs, so only a hover/focus accent color and

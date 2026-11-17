@@ -8,7 +8,15 @@ import ApiService, {
   ReviewHistoryEvent,
 } from '../services/apiService';
 import { useAuth } from '../contexts/AuthContext';
-import { rehydrateProjectEntries } from '../utils/formFieldRendering';
+import { rehydrateProjectEntries, trimTextAnswers } from '../utils/formFieldRendering';
+
+// Form names for the success message on submit ("<name> Form submitted
+// successfully"), by template_id — the names the rest of the UI uses.
+const FORM_NAMES: Record<number, string> = {
+  1001: 'Self Review',
+  1002: 'Manager Review',
+  1003: 'HR Review',
+};
 
 export interface FormSection {
   name: string;
@@ -97,7 +105,11 @@ export function useSectionedFormTemplate(
   // call the Dashboard just made. Every other caller (HR/manager viewing an
   // employee, or SelfAssessment reached directly by URL) has no such
   // preloaded profile and fetches normally.
-  preloaded?: { template: FormTemplateResponse; submission: FormSubmissionStatus }
+  preloaded?: { template: FormTemplateResponse; submission: FormSubmissionStatus },
+  // Only passed by HR's Employee Review Details page when viewing a previous
+  // period — the backend returns that period's submission, always locked
+  // (read-only). Omitted everywhere else, meaning the current period.
+  reviewPeriodId?: string
 ) {
   const [template, setTemplate] = useState<FormTemplateResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -122,6 +134,10 @@ export function useSectionedFormTemplate(
   // approvalStatus/By/At above, never cleared on resubmit (see the
   // resubmit handler below, which appends to it instead).
   const [history, setHistory] = useState<ReviewHistoryEvent[]>([]);
+  // The Overall Review has closed this employee's period — callers hide
+  // Edit/Approve/Reject/Revise, and draft autosave below stops (the backend
+  // rejects all of these too, see _is_period_locked in main.py).
+  const [locked, setLocked] = useState(false);
   // Keyed by templateId+employeeId (not just templateId) so navigating between
   // two employees' evaluations — which reuses the same mounted component,
   // since it's the same route pattern — still triggers a fresh fetch.
@@ -163,7 +179,7 @@ export function useSectionedFormTemplate(
 
   useEffect(() => {
     if (templateId === undefined) return;
-    const formKey = `${templateId}:${employeeId ?? ''}`;
+    const formKey = `${templateId}:${employeeId ?? ''}:${reviewPeriodId ?? ''}`;
     // Guards against React StrictMode's dev-only double-invoke of effects —
     // without this, the same fetch fires twice on every mount.
     if (fetchedFormKeyRef.current === formKey) return;
@@ -173,6 +189,7 @@ export function useSectionedFormTemplate(
       setTemplate(response);
       setCurrentSectionIndex(0);
       setTargetName(submission.employee_name);
+      setLocked(!!submission.locked);
       if (submission.submitted) {
         setSubmittedAnswers(submission.answers || {});
         setSubmittedAt(submission.submitted_at);
@@ -197,7 +214,11 @@ export function useSectionedFormTemplate(
       setError(null);
       setSubmittedAnswers(null);
       try {
-        const { template: response, submission } = await ApiService.getFormWithSubmission(templateId, employeeId);
+        const { template: response, submission } = await ApiService.getFormWithSubmission(
+          templateId,
+          employeeId,
+          reviewPeriodId
+        );
         applyResponse(response, submission);
       } catch (err: any) {
         setError(err?.message || 'Failed to load form template');
@@ -208,7 +229,7 @@ export function useSectionedFormTemplate(
 
     fetchTemplate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [templateId, employeeId]);
+  }, [templateId, employeeId, reviewPeriodId]);
 
   // Memoized so its (and currentSection's) object identity only changes when
   // the template itself changes — not on every render. Form.useWatch below
@@ -294,12 +315,17 @@ export function useSectionedFormTemplate(
   // back-navigation in the same browser. Debounced so fast typing doesn't
   // fire a request on every keystroke.
   const handleValuesChange = () => {
-    if (templateId === undefined) return;
+    if (templateId === undefined || locked) return;
     if (draftSaveTimeoutRef.current !== null) {
       window.clearTimeout(draftSaveTimeoutRef.current);
     }
     draftSaveTimeoutRef.current = window.setTimeout(() => {
-      ApiService.saveFormDraft(templateId, form.getFieldsValue(true), employeeId).catch(() => {
+      const draftValues = form.getFieldsValue(true);
+      ApiService.saveFormDraft(
+        templateId,
+        template ? trimTextAnswers(template.questions, draftValues) : draftValues,
+        employeeId
+      ).catch(() => {
         // Best-effort — drafts are a nice-to-have, not required for the form
         // to function.
       });
@@ -312,7 +338,8 @@ export function useSectionedFormTemplate(
     // Date fields hold dayjs objects, which JSON.stringify serializes to a
     // UTC ISO timestamp — for timezones ahead of UTC that shifts the date
     // back a day once read back. Reduce to a plain YYYY-MM-DD before sending.
-    const normalizedValues = { ...values };
+    // Typed text is trimmed first (see trimTextAnswers).
+    const normalizedValues = trimTextAnswers(template.questions, values);
     for (const question of template.questions) {
       const key = String(question.question_number);
       const value = normalizedValues[key];
@@ -354,7 +381,8 @@ export function useSectionedFormTemplate(
     }
     try {
       await ApiService.submitFormTemplate(templateId, normalizedValues, employeeId);
-      message.success('Form submitted');
+      const formName = FORM_NAMES[Number(templateId)];
+      message.success(formName ? `${formName} Form submitted successfully` : 'Form submitted successfully');
       const now = new Date().toISOString();
       setSubmittedAnswers(normalizedValues);
       // Previously missing entirely — submitted_at is set server-side on
@@ -382,7 +410,12 @@ export function useSectionedFormTemplate(
         { event: prev.length === 0 ? 'submitted' : 'resubmitted', at: now, by: authState.user?.name },
       ]);
     } catch (err: any) {
-      if (err?.status === 409) {
+      if (err?.status === 409 && typeof err?.message === 'string' && err.message.includes('locked')) {
+        // The period was closed (Overall Review submitted) after this page
+        // loaded — keep the existing submitted answers, just stop editing.
+        message.error(err.message);
+        setLocked(true);
+      } else if (err?.status === 409) {
         message.error('You have already submitted this form.');
         setSubmittedAnswers(normalizedValues);
       } else {
@@ -415,6 +448,8 @@ export function useSectionedFormTemplate(
     setApprovalAt,
     history,
     setHistory,
+    locked,
+    setLocked,
     targetName,
     handleNext,
     handlePrevious,

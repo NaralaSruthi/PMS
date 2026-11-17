@@ -1,11 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Form, Input, Typography, Button } from 'antd';
+import { Form, Typography, Button } from 'antd';
 import { ArrowRightOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import ApiService, { FormQuestion } from '../services/apiService';
 import { useSectionedFormTemplate } from '../hooks/useSectionedFormTemplate';
-import { renderField, renderQuestionLabel, indentedFieldStyle, buildQuestionDisplayNumbers } from '../utils/formFieldRendering';
+import { useSubmitConfirmation } from '../hooks/useSubmitConfirmation';
+import {
+  renderField,
+  renderQuestionLabel,
+  indentedFieldStyle,
+  buildQuestionDisplayNumbers,
+  isTextQuestion,
+  AssessmentTextArea,
+} from '../utils/formFieldRendering';
 import { formatReviewPeriod } from '../utils/reviewPeriodFormat';
 import { useAuth } from '../contexts/AuthContext';
 import FormLoadingState from './FormLoadingState';
@@ -18,7 +26,6 @@ import '../styles/evaluationForm.css';
 import '../styles/hrEmployeeDetails.css';
 
 const { Title, Text } = Typography;
-const { TextArea } = Input;
 
 const MANAGER_EVALUATION_TEMPLATE_ID = 1002;
 const SELF_EVALUATION_TEMPLATE_ID = 1001;
@@ -69,6 +76,17 @@ interface ManagerEvaluationProps {
   // ManagerEmployeeReview's info-grid) can read it here instead of making
   // its own separate getFormTemplate call just to learn it.
   onReviewPeriodChange?: (reviewPeriod: string | undefined) => void;
+  // Fires once this evaluation has a submission on the server — right after
+  // a successful submit, or on load when one already exists — so a parent
+  // showing its own status (ManagerEmployeeReview's tab badge and workflow
+  // strip) can update without a refetch. Driven by submittedAnswers, which
+  // the shared hook only fills from a successful submit or from the server.
+  onSubmitted?: () => void;
+  // Reports HR/the CDO's decision ("approved"/"rejected", null while
+  // pending) once loaded and whenever it changes — e.g. back to null right
+  // after the manager resubmits a rejected evaluation — so the parent's tab
+  // badge and workflow strip can show "Rejected" without a refetch.
+  onApprovalStatusChange?: (status: string | null) => void;
 }
 
 const ManagerEvaluation: React.FC<ManagerEvaluationProps> = ({
@@ -76,6 +94,8 @@ const ManagerEvaluation: React.FC<ManagerEvaluationProps> = ({
   onSummaryChange,
   selfAssessmentSubmitted: selfAssessmentSubmittedProp,
   onReviewPeriodChange,
+  onSubmitted,
+  onApprovalStatusChange,
 }) => {
   // Reached via /manager-evaluation/:employeeId from ManagerEvaluationsList —
   // identifies which assigned employee this evaluation is about, threaded
@@ -106,12 +126,14 @@ const ManagerEvaluation: React.FC<ManagerEvaluationProps> = ({
     submittedAt,
     approvalStatus,
     history,
+    locked,
     targetName,
     handleNext,
     handlePrevious,
     handleSubmit,
     handleValuesChange,
   } = useSectionedFormTemplate(form, MANAGER_EVALUATION_TEMPLATE_ID, employeeId, isAutoFilledQuestion);
+  const { confirmSubmit, contextHolder: submitConfirmHolder } = useSubmitConfirmation();
 
   // The only way this ever becomes true: HR/CDO rejected it (see
   // HRManagerEvaluationTab.tsx's Reject button) — this is the sole
@@ -122,6 +144,17 @@ const ManagerEvaluation: React.FC<ManagerEvaluationProps> = ({
   // and never for HR themselves (their own edit carve-out for this
   // template was removed entirely).
   const [isEditing, setIsEditing] = useState(false);
+
+  useEffect(() => {
+    if (submittedAnswers) onSubmitted?.();
+  }, [submittedAnswers, onSubmitted]);
+
+  useEffect(() => {
+    // Not until loaded — before then approvalStatus is just the hook's
+    // initial empty value, not the server's.
+    if (loading) return;
+    onApprovalStatusChange?.(approvalStatus ?? null);
+  }, [loading, approvalStatus, onApprovalStatusChange]);
 
   // Prefill the form with the previously submitted answers when revising a
   // rejected evaluation — same rehydration approach useSectionedFormTemplate
@@ -307,11 +340,14 @@ const ManagerEvaluation: React.FC<ManagerEvaluationProps> = ({
             is HR/CDO explicitly rejecting it (see the Revise button below
             and submit_form's approval_status carve-out in main.py). */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginTop: 8 }}>
+          {/* "Rejected" replaces "Submitted" — it needs revising, so it
+              shouldn't read as done; an approval shows alongside it. */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <StatusBadge status="submitted" />
-            {approvalStatus && <StatusBadge status={approvalStatus} />}
+            <StatusBadge status={approvalStatus === 'rejected' ? 'rejected' : 'submitted'} />
+            {approvalStatus === 'approved' && <StatusBadge status="approved" />}
           </div>
-          {approvalStatus === 'rejected' && (
+          {/* No revising once the Overall Review has locked the period. */}
+          {approvalStatus === 'rejected' && !locked && (
             <Button type="primary" size="small" onClick={() => setIsEditing(true)}>
               Revise &amp; Resubmit
             </Button>
@@ -395,10 +431,12 @@ const ManagerEvaluation: React.FC<ManagerEvaluationProps> = ({
         <div><Text style={{ fontSize: 16, color: '#C5C0D6', lineHeight: 1.6 }}>{template.header_title}</Text></div>
       )}
 
+      {submitConfirmHolder}
       <Form
         form={form}
         layout="vertical"
-        onFinish={handleSubmit}
+        // Validation has passed by the time onFinish runs — confirm first.
+        onFinish={(values) => confirmSubmit('Submit Manager Review?', () => handleSubmit(values))}
         onValuesChange={handleValuesChange}
         onKeyDown={(e) => {
           const target = e.target as HTMLElement;
@@ -441,6 +479,9 @@ const ManagerEvaluation: React.FC<ManagerEvaluationProps> = ({
                   rules={[
                     {
                       required: true,
+                      // Spaces alone don't count as an answer (text types
+                      // only — see isTextQuestion).
+                      ...(isTextQuestion(question) ? { whitespace: true } : {}),
                       message: question.type === 'slider' ? 'Please provide a rating.' : 'This field is required',
                     },
                   ]}
@@ -457,16 +498,21 @@ const ManagerEvaluation: React.FC<ManagerEvaluationProps> = ({
                       }
                     >
                       {() => {
+                        // Shown once any rating is picked. Optional for the
+                        // neutral rating ("Meets"); required for every other
+                        // rating so the manager justifies it.
                         const selected = form.getFieldValue(String(question.question_number));
-                        return selected && selected !== NEUTRAL_RATING_LABEL ? (
+                        const commentRequired = selected !== NEUTRAL_RATING_LABEL;
+                        return selected ? (
                           <Form.Item
+                            key={commentRequired ? 'required' : 'optional'}
                             name={commentFieldName(question)}
                             label={<span style={COMMENT_LABEL_STYLE}>{question.comment_label}</span>}
                             initialValue={question.comment_answer || undefined}
-                            rules={[{ required: true, message: 'This field is required' }]}
+                            rules={[{ required: commentRequired, whitespace: commentRequired, message: 'This field is required' }]}
                             style={{ marginBottom: 24 }}
                           >
-                            <TextArea rows={2} className="styled-form-input" style={{ ...indentedFieldStyle, fontSize: 15 }} />
+                            <AssessmentTextArea style={{ ...indentedFieldStyle, fontSize: 15 }} />
                           </Form.Item>
                         ) : null;
                       }}
@@ -478,7 +524,7 @@ const ManagerEvaluation: React.FC<ManagerEvaluationProps> = ({
                       initialValue={question.comment_answer || undefined}
                       style={{ marginBottom: 24 }}
                     >
-                      <TextArea rows={2} className="styled-form-input" style={{ ...indentedFieldStyle, fontSize: 15 }} />
+                      <AssessmentTextArea style={{ ...indentedFieldStyle, fontSize: 15 }} />
                     </Form.Item>
                   )
                 )}

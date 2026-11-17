@@ -11,7 +11,10 @@
   height: 100%;
   box-sizing: border-box;
   background-color: var(--color-background, #F8FAFC);
-  padding: 32px;
+  /* Tighter at the top (20px) so content starts closer to the top bar. The
+     Self Review form doesn't use this container (evaluation-form-page), so
+     it keeps its own spacing. */
+  padding: 20px 32px 32px;
   overflow: hidden;
 }
 
@@ -35,7 +38,7 @@
    evaluationForm.css) — this is a dashboard/list page header sitting above
    dense stat cards and a table, not a single-focus form headline. */
 .app-page-title.ant-typography {
-  font-size: 26px;
+  font-size: 28px;
   font-weight: 700;
   color: var(--color-text, #111827);
   margin-bottom: 8px;

@@ -15,7 +15,7 @@ import '../styles/hrEmployeeDetails.css';
 
 const { Title, Text } = Typography;
 
-type TabKey = 'self' | 'manager' | 'hr';
+type TabKey = 'self' | 'manager' | 'hr' | 'overall';
 
 interface InfoField {
   label: string;
@@ -24,13 +24,16 @@ interface InfoField {
 
 // Reached from the Dashboard's "My Assessments" table (the "View" action on
 // an already-submitted Self Assessment row). Mirrors HREmployeeDetails' UI
-// exactly (info grid, workflow status strip, 3 tabs) but scoped to the
+// (info grid, workflow status strip, tabs) but scoped to the
 // logged-in employee's OWN reviews rather than one HR picked from the org
 // roster — every fetch below omits employee_id, which resolves to "self" the
 // same way every other employee_id-less call in this app already does (see
-// _resolve_target_employee in main.py). The 3 tab components are otherwise
+// _resolve_target_employee in main.py). Unlike HR's page, the employee gets
+// no Overall Review tab and no scores (hideScores on the Manager/HR Review
+// tabs) — only the reviews' answers and comments. The tab components are otherwise
 // unchanged from HR's usage — they're already read-only for anyone who isn't
-// HR (HREvaluationTab's create/edit form is now gated behind isHR).
+// HR/CDO (HREvaluationTab's create/edit form is gated behind isHR, which is
+// false for a regular employee viewing their own reviews here).
 //
 // No review-period filtering here, unlike HR's page: the backend keeps only
 // ONE submission ever per template per employee (see submit_form in
@@ -203,6 +206,15 @@ const MyReviewDetails: React.FC = () => {
       done: hrSubmitted,
       statusText: hrSubmitted ? 'Submitted' : hrEvaluationAvailable ? 'Ready' : 'Not Available',
     },
+    {
+      // Always "done" on this branch — reaching this workflow strip at all
+      // already requires overallApproved (see the early return above), so
+      // this step can never render as anything but complete here.
+      key: 'overall',
+      label: 'Overall Review',
+      done: overallApproved,
+      statusText: 'Approved',
+    },
   ];
 
   return (
@@ -269,7 +281,7 @@ const MyReviewDetails: React.FC = () => {
                   <StatusBadge status={managerSubmitted ? 'submitted' : 'not_started'} />
                 </span>
               ),
-              children: <HRManagerEvaluationTab submittedForPeriod={managerSubmitted} />,
+              children: <HRManagerEvaluationTab submittedForPeriod={managerSubmitted} hideScores />,
             },
             {
               key: 'hr',
@@ -279,7 +291,7 @@ const MyReviewDetails: React.FC = () => {
                   <StatusBadge status={hrSubmitted ? 'submitted' : hrEvaluationAvailable ? 'ready' : 'not_available'} />
                 </span>
               ),
-              children: <HREvaluationTab available={hrEvaluationAvailable} />,
+              children: <HREvaluationTab available={hrEvaluationAvailable} hideScores />,
             },
           ]}
         />

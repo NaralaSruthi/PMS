@@ -66,6 +66,12 @@ export class MicrosoftAuthService {
     const msalInstance = await this.initialize();
 
     try {
+      // Clear a stale "interaction in progress" flag (e.g. a popup closed
+      // mid-flow in an earlier session) — otherwise loginPopup refuses to
+      // start with interaction_in_progress. Safe: the login button is
+      // disabled while its own popup is open, so nothing live is cut off.
+      sessionStorage.removeItem('msal.interaction.status');
+
       const loginRequest = {
         scopes: this.graphScopes,
         prompt: 'select_account' as const,
@@ -96,8 +102,12 @@ export class MicrosoftAuthService {
     const msalInstance = await this.initialize();
     
     try {
-      const accounts = msalInstance.getAllAccounts();
-      
+      // Local sign-out only: clearing MSAL's cache ends the PMS session without
+      // a Microsoft logoutPopup. That popup set MSAL's "interaction in progress"
+      // flag and, if it didn't finish cleanly before the redirect to /login,
+      // left it behind — blocking the next Microsoft login. The next login
+      // still shows the account picker (prompt: 'select_account').
+
       // Always clear MSAL cache manually to ensure complete logout
       // MSAL stores cache with keys like 'msal.{clientId}.{cacheKey}'
       const clientId = this.msalConfig.auth.clientId;
@@ -115,21 +125,9 @@ export class MicrosoftAuthService {
           sessionStorage.removeItem(key);
         }
       });
-      
-      // Try to logout from Microsoft if accounts exist
-      if (accounts.length > 0) {
-        try {
-          // Use logoutPopup to sign out from Microsoft
-          // Note: This might show a popup, but it ensures proper logout from Microsoft's side
-          await msalInstance.logoutPopup({
-            account: accounts[0],
-          });
-        } catch (popupError) {
-          // If popup fails (e.g., blocked), try silent logout by clearing cache only
-          console.warn('Logout popup failed, using cache clearing only:', popupError);
-          // Cache is already cleared above, so we're done
-        }
-      }
+
+      // Drop MSAL's in-memory copy of the account too, not just storage
+      await msalInstance.clearCache();
     } catch (error) {
       console.error('Microsoft sign-out error:', error);
       // Even if logout fails, ensure MSAL cache is cleared
@@ -161,6 +159,25 @@ export class MicrosoftAuthService {
     const msalInstance = await this.initialize();
     const accounts = msalInstance.getAllAccounts();
     return accounts.length > 0 ? accounts[0] : null;
+  }
+
+  /**
+   * Get the ID token for the signed-in account (silently, from MSAL's cache
+   * or a background refresh) — sent to the backend to exchange for a PMS token
+   */
+  static async getIdToken(): Promise<string> {
+    const msalInstance = await this.initialize();
+    const account = await this.getCurrentAccount();
+
+    if (!account) {
+      throw new Error('No active account found');
+    }
+
+    const response = await msalInstance.acquireTokenSilent({
+      scopes: this.graphScopes,
+      account: account,
+    });
+    return response.idToken;
   }
 
   /**

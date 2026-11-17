@@ -1,32 +1,23 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Table, Typography, Avatar, Button, Select, Row, Col } from 'antd';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Table, Typography, Avatar, Button, Select, Row, Col, Tag } from 'antd';
 import { IdcardOutlined, TeamOutlined, ProfileOutlined, StarOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
-import ApiService, { HRDashboardResponse, HREmployee, HRManager } from '../services/apiService';
+import ApiService, { HRDashboardResponse, HREmployee, HRManager, ReviewPeriodOption } from '../services/apiService';
 import FormLoadingState from './FormLoadingState';
 import { getInitials, StatusBadge } from '../utils/teamStatusHelpers';
 import { formatReviewPeriod } from '../utils/reviewPeriodFormat';
 import { SummaryStatCard, ReviewStatusCard } from './ManagerDashboard';
+import HikeDistributionCard, { employeeHikeBracketIndex } from './HikeDistributionCard';
+import { HIKE_BRACKETS } from '../utils/hikeBrackets';
 import '../styles/pageLayout.css';
 import '../styles/teamTable.css';
 import '../styles/managerDashboard.css';
 
 const { Title, Text } = Typography;
 
-// A stable identifier for a review period, derived the same deterministic
-// way the backend's own performance-cycle grouping does (see
-// _performance_cycle_review_periods in main.py: "{start_year}-H1" for
-// July-December, "{start_year}-H2" for January-June — which belongs to the
-// cycle that STARTED the previous year). Used for navigation/identification
-// instead of the raw display label. Exported so the Employee Review Details
-// page can resolve the same ID from a submission's own review_period value.
-export const reviewPeriodId = (period: string): string => {
-  const julyMatch = period.match(/^July (\d{4})/);
-  if (julyMatch) return `${julyMatch[1]}-H1`;
-  const januaryMatch = period.match(/^January (\d{4})/);
-  if (januaryMatch) return `${parseInt(januaryMatch[1], 10) - 1}-H2`;
-  return period;
-};
+// Value of the Reporting Manager filter's "All Managers" option — never a
+// real employee_id.
+const ALL_OPTION = '__all__';
 
 interface EmptyHRStateProps {
   title?: string;
@@ -57,41 +48,49 @@ const HRDashboard: React.FC = () => {
   // that was already right here on this table's row.
   const [dashboardResponse, setDashboardResponse] = useState<HRDashboardResponse | null>(null);
   const [selectedManagerId, setSelectedManagerId] = useState<string | undefined>(undefined);
-  const [reviewPeriod, setReviewPeriod] = useState<string | undefined>(undefined);
-  const [reviewPeriods, setReviewPeriods] = useState<string[]>([]);
-  const [selectedReviewPeriod, setSelectedReviewPeriod] = useState<string | undefined>(undefined);
+  // Period being viewed, in the stored form the API takes ("Jan 2026 - Jun
+  // 2026"); absent means the current period. Kept in the URL so the details
+  // page's Back button returns to the same period. Only HR is offered
+  // previous periods (see review_period_options in get_hr_employees).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedReviewPeriodId = searchParams.get('review_period_id') || undefined;
+  const [reviewPeriodOptions, setReviewPeriodOptions] = useState<ReviewPeriodOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Guards against React StrictMode's dev-only double-invoke of effects.
-  const hasFetchedRef = useRef(false);
+  // Guards against React StrictMode's dev-only double-invoke of effects —
+  // keyed by period so switching periods still fetches.
+  const hasFetchedRef = useRef<string | null>(null);
+
+  const fetchEmployees = useCallback(async (reviewPeriodId?: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await ApiService.getHRDashboard(reviewPeriodId);
+      setDashboardResponse(response);
+      setEmployees(response.employees || []);
+      setManagers(response.managers || []);
+      setReviewPeriodOptions(response.review_period_options || []);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load HR dashboard');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    if (hasFetchedRef.current) return;
-    hasFetchedRef.current = true;
+    const fetchKey = requestedReviewPeriodId ?? '';
+    if (hasFetchedRef.current === fetchKey) return;
+    hasFetchedRef.current = fetchKey;
+    fetchEmployees(requestedReviewPeriodId);
+  }, [fetchEmployees, requestedReviewPeriodId]);
 
-    const fetchEmployees = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const response = await ApiService.getHRDashboard();
-        setDashboardResponse(response);
-        setEmployees(response.employees || []);
-        setManagers(response.managers || []);
-        setReviewPeriod(response.review_period);
-        setReviewPeriods(response.review_periods || []);
-        // Defaults to the current period — matches what the page showed
-        // before this selector existed; switching it is what lets HR look
-        // at a different period instead.
-        setSelectedReviewPeriod(response.review_period);
-      } catch (err: any) {
-        setError(err?.message || 'Failed to load HR dashboard');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchEmployees();
-  }, []);
+  // Switching period reloads the roster for that period (via the URL change
+  // above) rather than filtering the current one client-side.
+  const handleReviewPeriodChange = (value: string) => {
+    // A different period means different scores, so drop any hike filter.
+    setSelectedHikeIndex(undefined);
+    setSearchParams(value === dashboardResponse?.current_review_period_id ? {} : { review_period_id: value });
+  };
 
   // Only employees who actually report to the selected manager — "reports
   // to" is checked by employee_id (manager_ids), never by display name, so
@@ -104,23 +103,27 @@ const HRDashboard: React.FC = () => {
     [employees, selectedManagerId]
   );
 
-  // A submission only counts for the selected period if its own "Review
-  // Period" answer matches (see backend's _submission_review_period) — never
-  // just "submitted at all", since the one submission that exists could be
-  // for a different period entirely. Clearing the selector (no period
-  // chosen) falls back to raw submitted/not-submitted, same as before this
-  // selector existed.
-  const isSelfAssessmentSubmittedForPeriod = (employee: HREmployee) =>
-    employee.self_assessment.submitted &&
-    (!selectedReviewPeriod || employee.self_assessment.review_period === selectedReviewPeriod);
+  // Hike bracket picked on the Performance & Hike card (index into
+  // HIKE_BRACKETS) — narrows only the table below; the summary cards keep
+  // counting the whole manager-filtered roster so their numbers don't shift
+  // as HR clicks between brackets.
+  const [selectedHikeIndex, setSelectedHikeIndex] = useState<number | undefined>(undefined);
+  const tableEmployees = useMemo(
+    () =>
+      selectedHikeIndex === undefined
+        ? filteredEmployees
+        : filteredEmployees.filter((employee) => employeeHikeBracketIndex(employee) === selectedHikeIndex),
+    [filteredEmployees, selectedHikeIndex]
+  );
 
-  const isManagerEvaluationSubmittedForPeriod = (employee: HREmployee) =>
-    employee.manager_evaluation.submitted &&
-    (!selectedReviewPeriod || employee.manager_evaluation.review_period === selectedReviewPeriod);
+  // The roster is fetched for exactly the selected period (see
+  // get_hr_employees in main.py), so "submitted" already means "submitted
+  // for this period".
+  const isSelfAssessmentSubmittedForPeriod = (employee: HREmployee) => employee.self_assessment.submitted;
 
-  const isHREvaluationSubmittedForPeriod = (employee: HREmployee) =>
-    employee.hr_evaluation.submitted &&
-    (!selectedReviewPeriod || employee.hr_evaluation.review_period === selectedReviewPeriod);
+  const isManagerEvaluationSubmittedForPeriod = (employee: HREmployee) => employee.manager_evaluation.submitted;
+
+  const isHREvaluationSubmittedForPeriod = (employee: HREmployee) => employee.hr_evaluation.submitted;
 
   if (loading) {
     return <FormLoadingState />;
@@ -176,7 +179,15 @@ const HRDashboard: React.FC = () => {
         !record.manager_evaluation.has_manager && !isManagerEvaluationSubmittedForPeriod(record) ? (
           <Text type="secondary">N/A</Text>
         ) : (
-          <StatusBadge status={isManagerEvaluationSubmittedForPeriod(record) ? 'submitted' : 'not_started'} />
+          <StatusBadge
+            status={
+              isManagerEvaluationSubmittedForPeriod(record)
+                ? record.manager_evaluation.approval_status === 'rejected'
+                  ? 'rejected'
+                  : 'submitted'
+                : 'not_started'
+            }
+          />
         ),
     },
     {
@@ -193,14 +204,13 @@ const HRDashboard: React.FC = () => {
         if (!record.employee_id) {
           return '—';
         }
-        // Stable identifiers only — employee_id in the path, review period
-        // resolved to its ID form (never the raw label) as a query param.
-        // Preserves the HR Dashboard's currently-selected review period as
-        // the details page's own context; omitted entirely when no period
-        // is selected ("All Periods").
-        const query = selectedReviewPeriod
-          ? `?review_period_id=${encodeURIComponent(reviewPeriodId(selectedReviewPeriod))}`
-          : '';
+        // Stable identifiers only — employee_id in the path, and the
+        // review period (stored id form) as a query param when HR is
+        // looking at a previous period; omitted for the current one.
+        const query =
+          dashboardResponse && dashboardResponse.review_period_id !== dashboardResponse.current_review_period_id
+            ? `?review_period_id=${encodeURIComponent(dashboardResponse.review_period_id)}`
+            : '';
         return (
           <Button
             type="link"
@@ -222,42 +232,46 @@ const HRDashboard: React.FC = () => {
 
   return (
     <div className="app-page-container">
-      <div className="app-page-header">
-        <Title level={3} className="app-page-title" style={{ fontSize: 28 }}>HR Review</Title>
+      {/* Tighter than the shared 24px header margin — 8px here plus the
+          title's own 8px leaves 16px above the filter row. */}
+      <div className="app-page-header" style={{ marginBottom: 8 }}>
+        <Title level={3} className="app-page-title">HR Review</Title>
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 24, marginBottom: 20, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <Text strong>Review Period:</Text>
           <Select
-            allowClear
-            placeholder="All Periods"
             style={{ minWidth: 240 }}
-            value={selectedReviewPeriod}
-            onChange={(value) => setSelectedReviewPeriod(value)}
-            options={reviewPeriods.map((period) => ({
-              value: period,
-              label: period === reviewPeriod
-                ? `${formatReviewPeriod(period)} (current)`
-                : formatReviewPeriod(period),
+            value={dashboardResponse?.review_period_id}
+            onChange={handleReviewPeriodChange}
+            options={reviewPeriodOptions.map((option) => ({
+              value: option.review_period_id,
+              label: option.is_current
+                ? `${formatReviewPeriod(option.label)} (current)`
+                : formatReviewPeriod(option.label),
             }))}
           />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <Text strong>Reporting Manager:</Text>
+          {/* "All Managers" is a real option (ALL_OPTION), shown when no
+              manager is selected — the filter itself still uses undefined. */}
           <Select
-            allowClear
-            placeholder="All Managers"
+            allowClear={selectedManagerId !== undefined}
             style={{ minWidth: 240 }}
-            value={selectedManagerId}
-            onChange={(value) => setSelectedManagerId(value)}
-            options={managers.map((manager) => ({ value: manager.employee_id, label: manager.name }))}
+            value={selectedManagerId ?? ALL_OPTION}
+            onChange={(value) => setSelectedManagerId(value === ALL_OPTION ? undefined : value)}
+            options={[
+              { value: ALL_OPTION, label: 'All Managers' },
+              ...managers.map((manager) => ({ value: manager.employee_id, label: manager.name })),
+            ]}
           />
         </div>
       </div>
 
       <Row gutter={[{ xs: 16, sm: 20, lg: 24 }, { xs: 16, sm: 20, lg: 24 }]} align="stretch" style={{ marginBottom: 24 }}>
-        <Col xs={24} sm={12} lg={6}>
+        <Col xs={24} sm={12} lg={8} xl={{ flex: '20%' }}>
           <SummaryStatCard
             icon={<TeamOutlined />}
             value={totalCount}
@@ -266,7 +280,7 @@ const HRDashboard: React.FC = () => {
             iconBackground="#3B82F6"
           />
         </Col>
-        <Col xs={24} sm={12} lg={6}>
+        <Col xs={24} sm={12} lg={8} xl={{ flex: '20%' }}>
           <ReviewStatusCard
             icon={<ProfileOutlined />}
             title="Self Reviews"
@@ -277,7 +291,7 @@ const HRDashboard: React.FC = () => {
             pendingCount={selfAssessmentPendingCount}
           />
         </Col>
-        <Col xs={24} sm={12} lg={6}>
+        <Col xs={24} sm={12} lg={8} xl={{ flex: '20%' }}>
           <ReviewStatusCard
             icon={<StarOutlined />}
             title="Manager Reviews"
@@ -290,7 +304,7 @@ const HRDashboard: React.FC = () => {
             pendingLabel="Not Completed"
           />
         </Col>
-        <Col xs={24} sm={12} lg={6}>
+        <Col xs={24} sm={12} lg={8} xl={{ flex: '20%' }}>
           <ReviewStatusCard
             icon={<SafetyCertificateOutlined />}
             title="HR Reviews"
@@ -303,10 +317,34 @@ const HRDashboard: React.FC = () => {
             pendingLabel="Not Completed"
           />
         </Col>
+        <Col xs={24} sm={12} lg={8} xl={{ flex: '20%' }}>
+          <HikeDistributionCard
+            employees={filteredEmployees}
+            selectedIndex={selectedHikeIndex}
+            onSelect={setSelectedHikeIndex}
+          />
+        </Col>
       </Row>
 
+      {selectedHikeIndex !== undefined && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+          <Text strong>Hike:</Text>
+          <Tag closable color="purple" onClose={() => setSelectedHikeIndex(undefined)} style={{ marginInlineEnd: 0 }}>
+            {HIKE_BRACKETS[selectedHikeIndex].hike} hike ({HIKE_BRACKETS[selectedHikeIndex].label})
+          </Tag>
+          <Text type="secondary" style={{ fontSize: 13 }}>
+            {tableEmployees.length} of {filteredEmployees.length} employees
+          </Text>
+        </div>
+      )}
+
       <div className="app-content-card">
-        {filteredEmployees.length === 0 ? (
+        {filteredEmployees.length > 0 && tableEmployees.length === 0 ? (
+          <EmptyHRState
+            title="No employees in this hike bracket"
+            description="No employee's Overall Score falls in this range. Clear the hike filter to see everyone."
+          />
+        ) : filteredEmployees.length === 0 ? (
           selectedManagerId ? (
             <EmptyHRState
               title="No reports for this manager"
@@ -317,10 +355,14 @@ const HRDashboard: React.FC = () => {
           )
         ) : (
           <Table
-            className="team-table"
+            className="team-table scrollable-team-table"
             columns={columns}
-            dataSource={filteredEmployees}
+            dataSource={tableEmployees}
             rowKey="email"
+            // Fixed header, scrolling rows — same setup as the Manager Review
+            // table (see scrollable-team-table in teamTable.css, which makes
+            // the body fill the card; the 240 is only antd's trigger).
+            scroll={{ y: 240 }}
             pagination={{
               pageSize: 10,
               showTotal: (total, range) => `Showing ${range[0]}–${range[1]} of ${total} employees`,

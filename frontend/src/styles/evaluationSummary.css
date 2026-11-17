@@ -20,6 +20,10 @@
 
 .manager-eval-tab-layout__summary {
   min-width: 0;
+  /* Hike reference card stacked above the Evaluation Summary card. */
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 /* Sticky only on desktop, where the two columns actually sit side by side —
@@ -57,6 +61,80 @@
   .manager-eval-tab-layout__summary {
     order: -1;
   }
+}
+
+/* Stacked tablet view: the sidebar is full-width here, so put the hike
+   reference and the Evaluation Summary side by side rather than leaving two
+   wide, mostly-empty cards. Phones fall back to the single column above. */
+@media (min-width: 641px) and (max-width: 1024px) {
+  .manager-eval-tab-layout__summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+  }
+}
+
+/* Performance Score & Hike reference (PerformanceHikeReference.tsx) — a
+   tighter variant of the summary card above. */
+.hike-reference-card {
+  padding: 16px 20px;
+}
+
+.hike-reference-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-bottom: 10px;
+}
+
+.hike-reference-card__current {
+  font-size: 12px;
+  color: #8B86A2;
+}
+
+.hike-reference-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+.hike-reference-table th {
+  font-size: 11px;
+  font-weight: 500;
+  color: #8B86A2;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: left;
+  padding: 0 8px 6px;
+  border-bottom: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
+}
+
+.hike-reference-table td {
+  color: #C5C0D6;
+  padding: 5px 8px;
+}
+
+.hike-reference-table th:last-child,
+.hike-reference-table td:last-child {
+  text-align: right;
+}
+
+.hike-reference-table__row--active td {
+  background-color: rgba(102, 102, 209, 0.22);
+  color: #F4F1F8;
+  font-weight: 600;
+}
+
+.hike-reference-table__row--active td:first-child {
+  border-radius: 6px 0 0 6px;
+  box-shadow: inset 3px 0 0 var(--color-primary, #6666D1);
+}
+
+.hike-reference-table__row--active td:last-child {
+  border-radius: 0 6px 6px 0;
 }
 
 .evaluation-summary-card {

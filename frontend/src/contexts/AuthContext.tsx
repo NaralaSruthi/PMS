@@ -13,6 +13,28 @@ import { type User, type AuthState, type AuthContextType } from '../types/user';
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// Builds the app's User from the backend token's claims. Every sign-in path
+// (password, Microsoft, page-reload restore) goes through here so they all
+// carry the same role flags. auth_method is stamped by the backend; tokens
+// issued before it existed have none and are treated as manual.
+const userFromClaims = (flatClaims: any): User => ({
+  id: flatClaims.user_id || 'unknown',
+  name: flatClaims.name,
+  email: flatClaims.email,
+  title: flatClaims.title || 'User',
+  designation: flatClaims.designation || undefined,
+  department: flatClaims.department || undefined,
+  employeeId: flatClaims.employee_id || undefined,
+  hasTeam: flatClaims.has_team || false,
+  isHR: flatClaims.is_hr || false,
+  isCDO: flatClaims.is_cdo || false,
+  role: flatClaims.role || 'user', // Use mapped role name from JWT
+  view: flatClaims.view || true, // Permissions are at root level in JWT
+  edit: flatClaims.edit || true,
+  settings: flatClaims.settings || true,
+  authMethod: flatClaims.auth_method === 'microsoft' ? 'microsoft' : 'manual'
+});
+
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const location = useLocation();
   const [authState, setAuthState] = useState<AuthState>({
@@ -70,23 +92,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             const flatClaims = JWTUtils.getFlatClaims(authToken);
         
          if (flatClaims && flatClaims.email && flatClaims.name) {
-           const user: User = {
-             id: flatClaims.user_id || 'unknown',
-             name: flatClaims.name,
-             email: flatClaims.email,
-             title: (flatClaims as any).title || 'User',
-             designation: (flatClaims as any).designation || undefined,
-             department: (flatClaims as any).department || undefined,
-             employeeId: (flatClaims as any).employee_id || undefined,
-             hasTeam: (flatClaims as any).has_team || false,
-             isHR: (flatClaims as any).is_hr || false,
-             isCDO: (flatClaims as any).is_cdo || false,
-             role: (flatClaims as any).role || 'user', // Use mapped role name from JWT
-             view: (flatClaims as any).view || true, // Permissions are at root level in JWT
-             edit: (flatClaims as any).edit || true,
-             settings: (flatClaims as any).settings || true,
-             authMethod: 'manual'
-           };
+           const user = userFromClaims(flatClaims);
           
           
           // Store the fresh user data (prefer sessionStorage)
@@ -134,17 +140,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
       }
       
-      // Clear auth state and redirect
-      setAuthState({
-        isAuthenticated: false,
-        isLoading: false,
-        user: null
-      });
-      
-      // Small delay to ensure state is cleared before redirect
-      setTimeout(() => {
-        window.location.href = '/login';
-      }, 100);
+      // Single full reload straight to /login. Deliberately no setAuthState
+      // first: storage is already cleared above (the reload reads auth from
+      // there), and flipping isAuthenticated would make SecureRoute draw the
+      // Login screen in place just before the reload draws it again — the
+      // login page appearing twice. replace() also drops the protected page
+      // from history, so Back after logout doesn't return to it.
+      window.location.replace('/login');
     } catch (error) {
       // Force logout by clearing everything
       sessionStorage.removeItem('authToken');
@@ -171,16 +173,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       } catch (clearError) {
         console.error('Error clearing MSAL cache:', clearError);
       }
-      
-      setAuthState({
-        isAuthenticated: false,
-        isLoading: false,
-        user: null
-      });
-      
-      setTimeout(() => {
-        window.location.href = '/login';
-      }, 100);
+
+      // Same single reload as above.
+      window.location.replace('/login');
     }
   }, [authState.user?.authMethod]);
 
@@ -269,11 +264,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           
           // If no valid stored token or email mismatch, try to exchange Microsoft auth for backend token
           try {
-            const response = await ApiService.microsoftLogin({
-              email: microsoftUser.mail || microsoftUser.userPrincipalName,
-              name: microsoftUser.displayName,
-              id: microsoftUser.id
-            });
+            const idToken = await MicrosoftAuthService.getIdToken();
+            const response = await ApiService.microsoftLogin(idToken);
             
             if (response.success && response.token) {
               // Verify the token
@@ -282,17 +274,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 // Extract user info from JWT token
                 const flatClaims = JWTUtils.getFlatClaims(response.token);
                 if (flatClaims && flatClaims.email) {
-                  const user: User = {
-                    id: flatClaims.user_id || microsoftUser.id,
-                    name: flatClaims.name || microsoftUser.displayName,
-                    email: flatClaims.email || microsoftUser.mail || microsoftUser.userPrincipalName,
-                    title: (flatClaims as any).title || 'Microsoft User',
-                    role: (flatClaims as any).role || 'user',
-                    view: (flatClaims as any).view || true,
-                    edit: (flatClaims as any).edit || false,
-                    settings: (flatClaims as any).settings || false,
-                    authMethod: 'microsoft'
-                  };
+                  const user = userFromClaims(flatClaims);
                   
                   // Store token and user
                   sessionStorage.setItem('authToken', response.token);
@@ -477,34 +459,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // Step 1: Authenticate with Microsoft
       const authResult = await MicrosoftAuthService.signIn();
 
-      // Get the account info from MSAL to see what email was actually used to log in
-      const msalAccount = authResult.account;
-      const loginEmail = msalAccount?.username || msalAccount?.name;
-
       // Step 2: Get Microsoft user profile using the token from sign-in result
       // This avoids calling getAccessToken() again which could fail with interaction_required
       const microsoftUser = await MicrosoftAuthService.getUserProfile(authResult.accessToken);
 
-      // Determine which email to use
-      // CRITICAL: If login email differs from Graph API email, use login email (alias scenario)
-      const graphEmail = microsoftUser.mail || microsoftUser.userPrincipalName;
-      let emailToSend = graphEmail;
-
-      if (loginEmail && loginEmail.toLowerCase() !== graphEmail.toLowerCase()) {
-        // Alias scenario: the address used to sign in differs from the Graph
-        // API's own record of the user's email — send the login alias rather
-        // than the Graph email so the backend resolves the same account the
-        // user actually authenticated as.
-        emailToSend = loginEmail;
-      }
-
-      // Step 3: Exchange Microsoft authentication for backend JWT token (same as manual login)
+      // Step 3: Exchange the Microsoft ID token for a backend JWT token. The
+      // backend verifies it and picks the email itself (sign-in alias first,
+      // then mailbox address), so no email is chosen or sent from here.
       try {
-        const response = await ApiService.microsoftLogin({
-          email: emailToSend, // Use selected email (alias if detected, otherwise Graph API email)
-          name: microsoftUser.displayName,
-          id: microsoftUser.id
-        });
+        const response = await ApiService.microsoftLogin(authResult.idToken);
         
         if (!response.success || !response.token) {
           throw new Error(response.message || response.error || 'Failed to get backend token');
@@ -523,21 +486,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           throw new Error('Invalid token structure');
         }
         
-        // Use backend token email (backend's source of truth) — it may have
-        // normalized an alias we sent to the account's primary address.
-        const finalEmail = flatClaims.email;
-        
-        const user: User = {
-          id: flatClaims.user_id || microsoftUser.id,
-          name: flatClaims.name || microsoftUser.displayName,
-          email: finalEmail, // Use backend token email (backend normalized alias to primary email)
-          title: (flatClaims as any).title || 'Microsoft User',
-          role: (flatClaims as any).role || 'user',
-          view: (flatClaims as any).view || true,
-          edit: (flatClaims as any).edit || false,
-          settings: (flatClaims as any).settings || false,
-          authMethod: 'microsoft'
-        };
+        // Backend token is the source of truth for email and role flags — it
+        // may have resolved a sign-in alias to the account's primary address.
+        const user = userFromClaims(flatClaims);
         
         // Step 6: Store authentication data (same as manual login)
         sessionStorage.setItem('authToken', response.token);

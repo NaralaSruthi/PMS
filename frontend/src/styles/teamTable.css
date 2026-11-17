@@ -278,3 +278,13 @@
   line-height: 1.6;
   color: var(--color-text-secondary, #6B7280);
 }
+
+/* Add/Edit Employee dialog (Employees.tsx): tighter spacing between fields
+   than antd's default 24px, so the two-column form stays compact. */
+.employee-form-compact .ant-form-item {
+  margin-bottom: 14px;
+}
+
+.employee-form-compact .ant-form-item-label {
+  padding-bottom: 4px;
+}

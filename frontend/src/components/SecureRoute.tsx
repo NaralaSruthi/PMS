@@ -35,7 +35,7 @@ const SecureRoute: React.FC<SecureRouteProps> = ({ children }) => {
   }
 
   if (!authState.isAuthenticated) {
-    // Show login page with both manual and Microsoft 365 options
+    // Show the Microsoft 365 login page
     return <Login />;
   }
 

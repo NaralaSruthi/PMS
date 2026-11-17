@@ -22,25 +22,25 @@ export interface EvaluationSummaryProps {
   // loading) — rendered as a quiet placeholder rather than a spinner, since
   // this sidebar never fetches anything of its own.
   summary: RatingSummary | null;
-  // This review's weight toward the combined Overall Score (see
-  // OverallReviewTab): Manager Review counts for 80, HR Review for 20.
-  // Omitted (or 100) shows the plain 0-100 percentage, unscaled — the
-  // center label becomes "<weighted>/<weight>" instead of "<percent>%" so
-  // it's never mistaken for a raw percentage once scaled down.
-  weight?: number;
 }
+
+// Points as stored (up to 2 decimals), without trailing zeros: 61.25, 7.5, 85.
+export const formatPoints = (points: number) => String(Math.round(points * 100) / 100);
 
 // Manager Evaluation tab's sidebar (see ManagerEmployeeReview.tsx): a compact
 // donut of the live rating-question answers, with the rating quality score
 // (points earned / points possible so far) centered in it, and a legend
 // (count + share of answered) below.
-const EvaluationSummary: React.FC<EvaluationSummaryProps> = ({ summary, weight = 100 }) => {
+const EvaluationSummary: React.FC<EvaluationSummaryProps> = ({ summary }) => {
   const slices: RatingDistributionSlice[] =
     summary?.rows.map((row) => ({ label: row.label, value: row.count, color: RATING_COLORS[row.label] })) || [];
 
-  const rawPercentage = summary?.scorePercentage ?? 0;
+  // Points earned / possible from each question's own points (e.g. "61.25/85"
+  // on the Manager Review) — "—" until HR has given the form's questions points.
   const centerLabel =
-    weight === 100 ? `${rawPercentage}%` : `${Math.round((rawPercentage / 100) * weight)}/${weight}`;
+    summary && summary.possiblePoints > 0
+      ? `${formatPoints(summary.earnedPoints)}/${formatPoints(summary.possiblePoints)}`
+      : '—';
 
   return (
     <div className="evaluation-summary-card">
@@ -97,6 +97,26 @@ const EvaluationSummary: React.FC<EvaluationSummaryProps> = ({ summary, weight =
                 </span>
               </div>
             ))}
+          </div>
+
+          {/* The score above counts unanswered questions as 0, so say
+              plainly whether it's final yet. */}
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginTop: 16,
+              paddingTop: 12,
+              borderTop: '1px solid var(--color-border, rgba(255,255,255,0.12))',
+            }}
+          >
+            <span style={{ fontSize: 13, color: '#C5C0D6' }}>
+              Questions Rated {summary.answered} / {summary.totalEligible}
+            </span>
+            {!summary.complete && (
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#F0C97A' }}>Incomplete</span>
+            )}
           </div>
         </>
       )}

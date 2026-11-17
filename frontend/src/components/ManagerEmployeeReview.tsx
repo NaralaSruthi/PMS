@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Typography, Button, Tabs } from 'antd';
 import { ArrowLeftOutlined, CheckCircleFilled, ClockCircleOutlined } from '@ant-design/icons';
@@ -7,6 +7,7 @@ import FormLoadingState from './FormLoadingState';
 import HRSelfAssessmentTab from './HRSelfAssessmentTab';
 import ManagerEvaluation, { RatingSummary } from './ManagerEvaluation';
 import EvaluationSummary from './EvaluationSummary';
+import PerformanceHikeReference from './PerformanceHikeReference';
 import { StatusBadge } from '../utils/teamStatusHelpers';
 import { formatReviewPeriod } from '../utils/reviewPeriodFormat';
 import '../styles/pageLayout.css';
@@ -50,6 +51,16 @@ const ManagerEmployeeReview: React.FC = () => {
   // manager answers rating questions — read-only here, never fetched
   // separately.
   const [ratingSummary, setRatingSummary] = useState<RatingSummary | null>(null);
+  // Set by ManagerEvaluation's onSubmitted. The team roster above is loaded
+  // once (or handed over from the list page via router state, which also
+  // survives a refresh), so without this the Manager Review badge and
+  // workflow step kept showing "Not Submitted" after a successful submit.
+  const [managerSubmittedLive, setManagerSubmittedLive] = useState(false);
+  const handleManagerSubmitted = useCallback(() => setManagerSubmittedLive(true), []);
+  // HR/the CDO's decision as the Manager Review form last loaded or changed
+  // it (undefined until it reports) — fresher than the roster, which can be
+  // a stale copy handed over from the list page.
+  const [liveApprovalStatus, setLiveApprovalStatus] = useState<string | null | undefined>(undefined);
   // Guards against React StrictMode's dev-only double-invoke of effects.
   const hasFetchedRef = useRef(false);
 
@@ -106,7 +117,10 @@ const ManagerEmployeeReview: React.FC = () => {
   }
 
   const selfSubmitted = selfEvalTeam.find((member) => member.employee_id === employeeId)?.submitted ?? false;
-  const managerEvalSubmitted = employee.submitted;
+  const managerEvalSubmitted = employee.submitted || managerSubmittedLive;
+  const managerRejected =
+    managerEvalSubmitted &&
+    (liveApprovalStatus !== undefined ? liveApprovalStatus : employee.approval_status) === 'rejected';
 
   // Only real, existing fields — nothing here is invented. designation and
   // department come straight from dataflix_users (via GET /api/forms/{id}/team).
@@ -127,8 +141,9 @@ const ManagerEmployeeReview: React.FC = () => {
     {
       key: 'manager',
       label: 'Manager Review',
-      done: managerEvalSubmitted,
-      statusText: managerEvalSubmitted ? 'Submitted' : 'Not Started',
+      // Rejected = sent back for revision, so not done.
+      done: managerEvalSubmitted && !managerRejected,
+      statusText: managerRejected ? 'Rejected' : managerEvalSubmitted ? 'Submitted' : 'Not Started',
     },
   ];
 
@@ -193,7 +208,9 @@ const ManagerEmployeeReview: React.FC = () => {
               label: (
                 <span className="hr-tab-label">
                   <span>Manager Review</span>
-                  <StatusBadge status={managerEvalSubmitted ? 'submitted' : 'not_started'} />
+                  <StatusBadge
+                    status={managerRejected ? 'rejected' : managerEvalSubmitted ? 'submitted' : 'not_started'}
+                  />
                 </span>
               ),
               // Mounts ManagerEvaluation immediately instead of waiting for
@@ -210,10 +227,13 @@ const ManagerEmployeeReview: React.FC = () => {
                       onSummaryChange={setRatingSummary}
                       selfAssessmentSubmitted={selfSubmitted}
                       onReviewPeriodChange={setReviewPeriod}
+                      onSubmitted={handleManagerSubmitted}
+                      onApprovalStatusChange={setLiveApprovalStatus}
                     />
                   </div>
                   <div className="manager-eval-tab-layout__summary">
-                    <EvaluationSummary summary={ratingSummary} weight={80} />
+                    <PerformanceHikeReference scorePercentage={ratingSummary?.scorePercentage} />
+                    <EvaluationSummary summary={ratingSummary} />
                   </div>
                 </div>
               ),

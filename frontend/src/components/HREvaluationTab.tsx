@@ -1,11 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Form, Input, Typography, Spin, Button } from 'antd';
+import { Form, Typography, Spin, Button } from 'antd';
 import dayjs from 'dayjs';
 import { FormQuestion } from '../services/apiService';
 import { useSectionedFormTemplate } from '../hooks/useSectionedFormTemplate';
-import { renderField, renderQuestionLabel, indentedFieldStyle, buildQuestionDisplayNumbers } from '../utils/formFieldRendering';
+import { useSubmitConfirmation } from '../hooks/useSubmitConfirmation';
+import {
+  renderField,
+  renderQuestionLabel,
+  indentedFieldStyle,
+  buildQuestionDisplayNumbers,
+  isTextQuestion,
+  AssessmentTextArea,
+} from '../utils/formFieldRendering';
 import { ManagerEvaluationAnswers } from './ManagerEvaluationAnswers';
 import EvaluationSummary from './EvaluationSummary';
+import PerformanceHikeReference from './PerformanceHikeReference';
 import { useAuth } from '../contexts/AuthContext';
 import { StatusBadge } from '../utils/teamStatusHelpers';
 import { computeRatingSummary } from '../utils/ratingSummary';
@@ -14,7 +23,6 @@ import '../styles/hrEmployeeDetails.css';
 import '../styles/evaluationSummary.css';
 
 const { Title, Text } = Typography;
-const { TextArea } = Input;
 
 const HR_EVALUATION_TEMPLATE_ID = 1003;
 
@@ -52,6 +60,13 @@ export interface HREvaluationTabProps {
   // state doesn't touch, so without this callback they'd keep showing
   // "Ready" even after the submission just succeeded.
   onSubmitted?: () => void;
+  // HR-only: show a previous period's submission (read-only, no Edit).
+  // Omitted for the current period.
+  reviewPeriodId?: string;
+  // Employee's own My Reviews page only: hides the score summary panel
+  // (rating chart and points) so the answers use the full width. HR, CDO and
+  // manager views leave this off and keep their scores.
+  hideScores?: boolean;
 }
 
 // Employee Review Details page's "HR Evaluation" tab. Unlike
@@ -62,7 +77,7 @@ export interface HREvaluationTabProps {
 // template. Backend enforces that (is_hr + a specific employee_id, plus the
 // same availability gate) in submit_form — this component doesn't just trust
 // a client-side check.
-const HREvaluationTab: React.FC<HREvaluationTabProps> = ({ employeeId, available, onSubmitted }) => {
+const HREvaluationTab: React.FC<HREvaluationTabProps> = ({ employeeId, available, onSubmitted, reviewPeriodId, hideScores }) => {
   const { authState } = useAuth();
   const isHR = authState.user?.isHR || false;
   // CDO shares HR's is_hr flag (see HR_DESIGNATIONS in main.py) so they can
@@ -93,11 +108,20 @@ const HREvaluationTab: React.FC<HREvaluationTabProps> = ({ employeeId, available
     submitting,
     submittedAnswers,
     submittedAt,
+    locked,
     handleNext,
     handlePrevious,
     handleSubmit,
     handleValuesChange,
-  } = useSectionedFormTemplate(form, available ? HR_EVALUATION_TEMPLATE_ID : undefined, employeeId, isAutoFilledQuestion);
+  } = useSectionedFormTemplate(
+    form,
+    available ? HR_EVALUATION_TEMPLATE_ID : undefined,
+    employeeId,
+    isAutoFilledQuestion,
+    undefined,
+    reviewPeriodId
+  );
+  const { confirmSubmit, contextHolder: submitConfirmHolder } = useSubmitConfirmation();
 
   // "Review Period" pre-fills with the current period, same as
   // ManagerEvaluation.tsx/selfassesment.tsx — never something HR picks.
@@ -132,15 +156,24 @@ const HREvaluationTab: React.FC<HREvaluationTabProps> = ({ employeeId, available
   // attempt, never on initial mount (wasSubmittingRef starts false), so this
   // can't misfire for an already-existing submission encountered on load.
   const wasSubmittingRef = useRef(false);
+  // submittedAt only changes when the submit actually succeeded (the hook
+  // sets it on success only), so the parent is told about real submissions,
+  // never a failed attempt — it marks the HR Review submitted straight away.
+  const submittedAtBeforeRef = useRef(submittedAt);
   useEffect(() => {
+    if (!wasSubmittingRef.current && submitting) {
+      submittedAtBeforeRef.current = submittedAt;
+    }
     if (wasSubmittingRef.current && !submitting) {
-      onSubmitted?.();
+      if (submittedAt !== submittedAtBeforeRef.current) {
+        onSubmitted?.();
+      }
       if (isEditing) {
         setIsEditing(false);
       }
     }
     wasSubmittingRef.current = submitting;
-  }, [submitting, isEditing, onSubmitted]);
+  }, [submitting, isEditing, onSubmitted, submittedAt]);
 
   // Unlike HRManagerEvaluationTab.tsx (which only ever edits an ALREADY
   // submitted evaluation, so its Form is only ever mounted while isEditing is
@@ -204,8 +237,10 @@ const HREvaluationTab: React.FC<HREvaluationTabProps> = ({ employeeId, available
   // submit it (the employee themselves on MyReviewDetails, or a CDO — see
   // canEditHR above) must never see a fillable form for a review they don't
   // submit, so they get the same read-only "not submitted yet" messaging
-  // every other not-yet-submitted tab uses instead.
-  if (!canEditHR && !submittedAnswers) {
+  // every other not-yet-submitted tab uses instead. Same for a locked period
+  // (a previous period, or the Overall Review already submitted) — nothing
+  // new can be filled out there, even by HR.
+  if ((!canEditHR || locked) && !submittedAnswers) {
     return (
       <div style={{ padding: '32px 4px', textAlign: 'center' }}>
         <Text strong style={{ display: 'block', fontSize: 16, color: '#F4F1F8', marginBottom: 8 }}>
@@ -221,7 +256,7 @@ const HREvaluationTab: React.FC<HREvaluationTabProps> = ({ employeeId, available
 
   if (submittedAnswers && !isEditing) {
     return (
-      <div className="manager-eval-tab-layout">
+      <div className="manager-eval-tab-layout" style={hideScores ? { gridTemplateColumns: '1fr' } : undefined}>
         <div className="manager-eval-tab-layout__form">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
             <Text strong style={{ fontSize: 18, color: '#F4F1F8', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
@@ -229,7 +264,8 @@ const HREvaluationTab: React.FC<HREvaluationTabProps> = ({ employeeId, available
             </Text>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <StatusBadge status="submitted" />
-              {canEditHR && (
+              {/* No Edit once the Overall Review has locked the period. */}
+              {canEditHR && !locked && (
                 <Button type="primary" size="middle" onClick={() => setIsEditing(true)}>
                   Edit
                 </Button>
@@ -261,9 +297,12 @@ const HREvaluationTab: React.FC<HREvaluationTabProps> = ({ employeeId, available
           )}
           <ManagerEvaluationAnswers sections={readOnlySections} answers={submittedAnswers} />
         </div>
-        <div className="manager-eval-tab-layout__summary">
-          <EvaluationSummary summary={ratingSummary} weight={20} />
-        </div>
+        {!hideScores && (
+          <div className="manager-eval-tab-layout__summary">
+            <PerformanceHikeReference scorePercentage={ratingSummary.scorePercentage} />
+            <EvaluationSummary summary={ratingSummary} />
+          </div>
+        )}
       </div>
     );
   }
@@ -283,10 +322,12 @@ const HREvaluationTab: React.FC<HREvaluationTabProps> = ({ employeeId, available
             {template.header_title}
           </Text>
         )}
+        {submitConfirmHolder}
         <Form
           form={form}
           layout="vertical"
-          onFinish={handleSubmit}
+          // Validation has passed by the time onFinish runs — confirm first.
+          onFinish={(values) => confirmSubmit('Submit HR Review?', () => handleSubmit(values))}
           onValuesChange={handleValuesChange}
           onKeyDown={(e) => {
             const target = e.target as HTMLElement;
@@ -345,6 +386,9 @@ const HREvaluationTab: React.FC<HREvaluationTabProps> = ({ employeeId, available
                     rules={[
                       {
                         required: true,
+                        // Spaces alone don't count as an answer (text types
+                        // only — see isTextQuestion).
+                        ...(isTextQuestion(question) ? { whitespace: true } : {}),
                         message: question.type === 'slider' ? 'Please provide a rating.' : 'This field is required',
                       },
                     ]}
@@ -368,7 +412,7 @@ const HREvaluationTab: React.FC<HREvaluationTabProps> = ({ employeeId, available
                               initialValue={question.comment_answer || undefined}
                               style={{ marginBottom: 24 }}
                             >
-                              <TextArea rows={2} className="styled-form-input" style={{ ...indentedFieldStyle, fontSize: 15 }} />
+                              <AssessmentTextArea style={{ ...indentedFieldStyle, fontSize: 15 }} />
                             </Form.Item>
                           ) : null
                         }
@@ -380,7 +424,7 @@ const HREvaluationTab: React.FC<HREvaluationTabProps> = ({ employeeId, available
                         initialValue={question.comment_answer || undefined}
                         style={{ marginBottom: 24 }}
                       >
-                        <TextArea rows={2} className="styled-form-input" style={{ ...indentedFieldStyle, fontSize: 15 }} />
+                        <AssessmentTextArea style={{ ...indentedFieldStyle, fontSize: 15 }} />
                       </Form.Item>
                     )
                   )}
@@ -413,7 +457,8 @@ const HREvaluationTab: React.FC<HREvaluationTabProps> = ({ employeeId, available
         </Form>
       </div>
       <div className="manager-eval-tab-layout__summary">
-        <EvaluationSummary summary={ratingSummary} weight={20} />
+        <PerformanceHikeReference scorePercentage={ratingSummary.scorePercentage} />
+        <EvaluationSummary summary={ratingSummary} />
       </div>
     </div>
   );

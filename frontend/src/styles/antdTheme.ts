@@ -17,6 +17,11 @@ const antdTheme: ThemeConfig = {
     colorError: '#F47272',
     colorText: '#F4F1F8',
     colorTextSecondary: '#C5C0D6',
+    // What <Typography.Text type="secondary"> actually uses — distinct from
+    // colorTextSecondary above. Left unset, antd's light-theme default
+    // (semi-transparent black) made every secondary message near-invisible
+    // on our dark backgrounds (e.g. the Overall Review tab's footer line).
+    colorTextDescription: '#C5C0D6',
     colorBorder: '#2A2740',
     colorBgContainer: '#100D24',
     colorBgElevated: '#16122E',

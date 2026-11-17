@@ -1,6 +1,6 @@
 import React from 'react';
 import { Avatar, Dropdown, Typography } from 'antd';
-import { MenuOutlined, UserOutlined, MailOutlined, IdcardOutlined, NumberOutlined, SafetyOutlined, LogoutOutlined } from '@ant-design/icons';
+import { MenuOutlined, UserOutlined, IdcardOutlined, NumberOutlined, LogoutOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import type { MenuProps } from 'antd';
 
@@ -38,10 +38,6 @@ const TopBar: React.FC<TopBarProps> = ({
             <UserOutlined style={{ fontSize: '14px' }} />
             <span>{authState.user?.name || 'User'}</span>
           </div>
-          <div style={{ color: '#C5C0D6', fontSize: '12px', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <MailOutlined style={{ fontSize: '12px' }} />
-            <span>{authState.user?.email || ''}</span>
-          </div>
           {authState.user?.designation && (
             <div style={{ color: '#C5C0D6', fontSize: '12px', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <IdcardOutlined style={{ fontSize: '12px' }} />
@@ -52,21 +48,6 @@ const TopBar: React.FC<TopBarProps> = ({
             <div style={{ color: '#C5C0D6', fontSize: '12px', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <NumberOutlined style={{ fontSize: '12px' }} />
               <span>{authState.user.employeeId}</span>
-            </div>
-          )}
-          {authState.user?.authMethod && (
-            <div style={{
-              color: '#C5C0D6',
-              fontSize: '12px',
-              marginTop: '4px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px'
-            }}>
-              <SafetyOutlined style={{ fontSize: '12px' }} />
-              <span style={{ textTransform: 'capitalize' }}>
-                {authState.user.authMethod === 'manual' ? 'Manual' : 'Microsoft'} Authentication
-              </span>
             </div>
           )}
         </div>

@@ -1,0 +1,126 @@
+/* Forms page (HR form editor) question table. Layered on top of the shared
+   .team-table styles (teamTable.css) and scoped to .forms-question-table, so
+   Employees/HR Dashboard/Team Evaluations tables are unaffected. Column
+   widths come from the column definitions in Forms.tsx; the table uses
+   table-layout: fixed so those widths hold and the Question column takes
+   the remaining space. Header stays fixed while the rows scroll, via the
+   shared scrollable-team-table setup (teamTable.css). */
+
+/* Slightly tighter horizontal padding than .team-table's 20px — this table
+   has six columns rather than the four or five the shared design assumes. */
+.forms-question-table .ant-table-thead > tr > th {
+  padding: 14px 16px;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.forms-question-table .ant-table-tbody > tr > td {
+  height: auto;
+  min-height: 56px;
+  padding: 14px 16px;
+  vertical-align: middle;
+}
+
+/* Question text wraps onto as many lines as it needs instead of being cut
+   off; long unbroken words still break rather than widening the table. */
+.forms-question-text {
+  display: block;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--color-text, #F4F1F8);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.forms-question-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.forms-section-text {
+  display: block;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-text-secondary, #C5C0D6);
+  overflow-wrap: anywhere;
+}
+
+.forms-order-text {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary, #C5C0D6);
+}
+
+/* Compact pill for the question type — one consistent style for every type,
+   matching the shape of .status-badge (teamTable.css). */
+.forms-type-badge {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(93, 211, 232, 0.28);
+  background: rgba(93, 211, 232, 0.08);
+  color: var(--color-accent, #5DD3E8);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.forms-required-yes {
+  color: var(--color-text, #F4F1F8);
+  font-weight: 500;
+}
+
+.forms-required-no {
+  color: var(--color-text-muted, #8B86A2);
+}
+
+/* System-managed questions: a muted purple accent bar on the row's first
+   cell, a faint tint across the row, and a "System" badge beside the text. */
+.forms-question-table .ant-table-tbody > tr.forms-row-system > td {
+  background: rgba(102, 102, 209, 0.06);
+}
+
+.forms-question-table .ant-table-tbody > tr.forms-row-system > td:first-child {
+  box-shadow: inset 3px 0 0 rgba(102, 102, 209, 0.7);
+}
+
+.forms-question-table .ant-table-tbody > tr.forms-row-system:hover > td,
+.forms-question-table .ant-table-tbody > tr.forms-row-system > td.ant-table-cell-row-hover {
+  background: rgba(102, 102, 209, 0.1);
+}
+
+.forms-system-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 1px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(102, 102, 209, 0.18);
+  color: #B9B9F2;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+/* Edit/Delete always in the same place on every row: right-aligned, same
+   width, whether Delete is live or disabled (system questions). */
+.forms-table-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+.forms-table-actions .ant-btn {
+  min-width: 64px;
+}

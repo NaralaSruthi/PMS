@@ -5,6 +5,7 @@ import { useSectionedFormTemplate } from '../hooks/useSectionedFormTemplate';
 import { ManagerEvaluationAnswers } from './ManagerEvaluationAnswers';
 import { isAutoFilledQuestion } from './ManagerEvaluation';
 import EvaluationSummary from './EvaluationSummary';
+import PerformanceHikeReference from './PerformanceHikeReference';
 import ReviewHistory from './ReviewHistory';
 import { useAuth } from '../contexts/AuthContext';
 import { StatusBadge } from '../utils/teamStatusHelpers';
@@ -36,6 +37,19 @@ export interface HRManagerEvaluationTabProps {
   // Set when the employee has no manager assigned at all, so there's nothing
   // that could ever be submitted here — distinct from "not submitted yet".
   naReason?: string;
+  // HR-only: show a previous period's submission (read-only, no
+  // Approve/Reject). Omitted for the current period.
+  reviewPeriodId?: string;
+  // Fires after an Approve/Reject has actually been recorded (never on a
+  // failed call), so the parent can refetch — e.g. HREmployeeDetails, whose
+  // Overall Review readiness depends on this approval status and otherwise
+  // kept showing "Ready" after a rejection until a refresh. Passes the
+  // decision so the parent can apply it before its refetch returns.
+  onDecision?: (status: 'approved' | 'rejected') => void;
+  // Employee's own My Reviews page only: hides the score summary panel
+  // (rating chart and points) so the answers use the full width. HR, CDO and
+  // manager views leave this off and keep their scores.
+  hideScores?: boolean;
 }
 
 // Employee Review Details page's "Manager Evaluation" tab. Read-only for
@@ -47,6 +61,9 @@ const HRManagerEvaluationTab: React.FC<HRManagerEvaluationTabProps> = ({
   submittedForPeriod,
   submittedByName,
   naReason,
+  reviewPeriodId,
+  onDecision,
+  hideScores,
 }) => {
   // The hook's internal Form.useWatch/setFieldsValue calls need a real
   // FormInstance to exist even though this read-only tab never renders a
@@ -72,10 +89,15 @@ const HRManagerEvaluationTab: React.FC<HRManagerEvaluationTabProps> = ({
     setApprovalAt,
     history,
     setHistory,
+    locked,
+    setLocked,
   } = useSectionedFormTemplate(
     form,
     submittedForPeriod ? MANAGER_EVALUATION_TEMPLATE_ID : undefined,
-    employeeId
+    employeeId,
+    undefined,
+    undefined,
+    reviewPeriodId
   );
 
   const ratingSummary = computeRatingSummary(template?.questions ?? [], submittedAnswers || {});
@@ -87,7 +109,8 @@ const HRManagerEvaluationTab: React.FC<HRManagerEvaluationTabProps> = ({
   // evaluation of them (employeeId is undefined there, resolving to "self"
   // server-side, which this action was never meant to target).
   const { authState } = useAuth();
-  const canDecide = (authState.user?.isHR || false) && !!employeeId;
+  // No decisions once the Overall Review has locked the period.
+  const canDecide = (authState.user?.isHR || false) && !!employeeId && !locked;
   // Tracks which specific decision is in flight (not just whether one is),
   // so only the clicked button shows its own loading spinner instead of both.
   const [decisionSubmitting, setDecisionSubmitting] = useState<'approved' | 'rejected' | null>(null);
@@ -114,7 +137,10 @@ const HRManagerEvaluationTab: React.FC<HRManagerEvaluationTabProps> = ({
         { event: status, at: now, by: authState.user?.name, ...(reason ? { reason } : {}) },
       ]);
       message.success(status === 'approved' ? 'Manager Evaluation approved' : 'Manager Evaluation rejected');
+      onDecision?.(status);
     } catch (err: any) {
+      // The period was locked after this tab loaded — hide the buttons.
+      if (err?.status === 409 && typeof err?.message === 'string' && err.message.includes('locked')) setLocked(true);
       message.error(err?.message || 'Failed to record decision');
     } finally {
       setDecisionSubmitting(null);
@@ -176,15 +202,17 @@ const HRManagerEvaluationTab: React.FC<HRManagerEvaluationTabProps> = ({
   }
 
   return (
-    <div className="manager-eval-tab-layout">
+    <div className="manager-eval-tab-layout" style={hideScores ? { gridTemplateColumns: '1fr' } : undefined}>
       <div className="manager-eval-tab-layout__form">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
           <Text strong style={{ fontSize: 20, color: '#F4F1F8', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
             Manager Review
           </Text>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <StatusBadge status="submitted" />
-            {approvalStatus && <StatusBadge status={approvalStatus} />}
+            {/* "Rejected" replaces "Submitted" until the manager resubmits;
+                an approval shows alongside it. */}
+            <StatusBadge status={approvalStatus === 'rejected' ? 'rejected' : 'submitted'} />
+            {approvalStatus === 'approved' && <StatusBadge status="approved" />}
             {canDecide && (
               <>
                 <Button
@@ -192,7 +220,9 @@ const HRManagerEvaluationTab: React.FC<HRManagerEvaluationTabProps> = ({
                   size="small"
                   onClick={() => handleDecision('approved')}
                   loading={decisionSubmitting === 'approved'}
-                  disabled={approvalStatus === 'approved'}
+                  // Also disabled while rejected — only the manager's
+                  // resubmission reopens it for a decision (Requirements §5.6).
+                  disabled={approvalStatus === 'approved' || approvalStatus === 'rejected'}
                 >
                   Approve
                 </Button>
@@ -249,9 +279,12 @@ const HRManagerEvaluationTab: React.FC<HRManagerEvaluationTabProps> = ({
         <ReviewHistory events={history || []} reviewLabel="Manager Review" />
         <ManagerEvaluationAnswers sections={readOnlySections} answers={submittedAnswers || {}} />
       </div>
-      <div className="manager-eval-tab-layout__summary">
-        <EvaluationSummary summary={ratingSummary} weight={80} />
-      </div>
+      {!hideScores && (
+        <div className="manager-eval-tab-layout__summary">
+          <PerformanceHikeReference scorePercentage={ratingSummary.scorePercentage} />
+          <EvaluationSummary summary={ratingSummary} />
+        </div>
+      )}
       <Modal
         title="Reject Manager Evaluation"
         open={rejectModalOpen}
@@ -259,6 +292,8 @@ const HRManagerEvaluationTab: React.FC<HRManagerEvaluationTabProps> = ({
         onCancel={() => setRejectModalOpen(false)}
         okText="Reject"
         okButtonProps={{ danger: true, disabled: !rejectReason.trim() }}
+        // Stays in the middle at any zoom level or window height.
+        centered
       >
         <Text style={{ display: 'block', marginBottom: 8 }}>Reason (required)</Text>
         <TextArea

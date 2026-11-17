@@ -37,6 +37,9 @@ export interface HRSelfAssessmentTabProps {
   preloadedEmployeeName?: string;
   preloadedSubmittedAt?: string;
   preloadedHeaderTitle?: string;
+  // HR-only: show a previous period's submission (see HREmployeeDetails).
+  // Omitted for the current period.
+  reviewPeriodId?: string;
 }
 
 // Read-only Self Assessment content for the Employee Review Details page's
@@ -54,6 +57,7 @@ const HRSelfAssessmentTab: React.FC<HRSelfAssessmentTabProps> = ({
   preloadedEmployeeName,
   preloadedSubmittedAt,
   preloadedHeaderTitle,
+  reviewPeriodId,
 }) => {
   const isPreloaded = preloadedQuestions !== undefined;
   const [loading, setLoading] = useState(submittedForPeriod && !isPreloaded);
@@ -74,8 +78,9 @@ const HRSelfAssessmentTab: React.FC<HRSelfAssessmentTabProps> = ({
     // selected period — the "not submitted" state below doesn't need the
     // full template/answers at all.
     if (!submittedForPeriod) return;
-    if (hasFetchedRef.current === employeeId) return;
-    hasFetchedRef.current = employeeId;
+    const fetchKey = `${employeeId ?? ''}:${reviewPeriodId ?? ''}`;
+    if (hasFetchedRef.current === fetchKey) return;
+    hasFetchedRef.current = fetchKey;
 
     const fetchData = async () => {
       setLoading(true);
@@ -83,7 +88,8 @@ const HRSelfAssessmentTab: React.FC<HRSelfAssessmentTabProps> = ({
       try {
         const { template: templateResponse, submission: submissionResponse } = await ApiService.getFormWithSubmission(
           SELF_EVALUATION_TEMPLATE_ID,
-          employeeId
+          employeeId,
+          reviewPeriodId
         );
         setQuestions(templateResponse.questions);
         setAnswers(submissionResponse.answers || {});
@@ -98,7 +104,7 @@ const HRSelfAssessmentTab: React.FC<HRSelfAssessmentTabProps> = ({
     };
 
     fetchData();
-  }, [employeeId, submittedForPeriod, isPreloaded]);
+  }, [employeeId, submittedForPeriod, isPreloaded, reviewPeriodId]);
 
   if (!submittedForPeriod) {
     return (
@@ -133,7 +139,9 @@ const HRSelfAssessmentTab: React.FC<HRSelfAssessmentTabProps> = ({
   const sections = groupIntoSections(questions);
 
   return (
-    <div>
+    // Same inset as OverallReviewTab's wrapper, so the header's status tag
+    // sits the same distance from the container edge on both tabs.
+    <div style={{ padding: '8px 4px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
         <Text strong style={{ fontSize: 20, color: '#F4F1F8', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
           Self Review

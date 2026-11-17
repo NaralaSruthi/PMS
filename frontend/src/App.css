@@ -465,9 +465,17 @@ html, body {
    User Profile Dropdown
 =============================== */
 
+/* Bottom padding (6px) + antd's menu-item padding (~5px) + divider margin
+   (4px) = ~15px between the last line and the divider. */
 .profile-dropdown-card {
-  padding: 12px 16px;
+  padding: 12px 16px 6px;
   min-width: 260px;
+}
+
+/* Whichever line is last (Employee ID, or Designation/Name when a user has
+   none) drops its inline 4px bottom margin, so the gap above stays ~15px. */
+.profile-dropdown-card > div:last-child {
+  margin-bottom: 0 !important;
 }
 
 .profile-menu-item {

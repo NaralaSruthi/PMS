@@ -16,6 +16,7 @@ import HRDashboard from './components/HRDashboard';
 import HREmployeeDetails from './components/HREmployeeDetails';
 import MyReviewDetails from './components/MyReviewDetails';
 import Employees from './components/Employees';
+import Forms from './components/Forms';
 import antdTheme from './styles/antdTheme';
 import './App.css';
 import './styles/gradient-theme.css';
@@ -51,6 +52,7 @@ const App: React.FC = () => {
             <Route path="hr-dashboard" element={<HRDashboard />} />
             <Route path="hr-dashboard/:employeeId" element={<HREmployeeDetails />} />
             <Route path="employees" element={<Employees />} />
+            <Route path="forms" element={<Forms />} />
           </Route>
 
           {/* Catch all route - redirect to dashboard (but only if not a public route) */}

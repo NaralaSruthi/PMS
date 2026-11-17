@@ -1,6 +1,7 @@
 import React from 'react';
 import { Input, Radio, DatePicker, Form, Button, Card, Checkbox } from 'antd';
 import type { FormInstance } from 'antd';
+import type { TextAreaProps } from 'antd/es/input';
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { Dayjs } from 'dayjs';
@@ -52,11 +53,69 @@ export const indentedFieldStyle = { marginLeft: FIELD_INDENT, width: `calc(100% 
 // without affecting other forms that call renderField without it. The box
 // appearance itself (border/height/radius/hover/focus) lives in
 // formFieldRendering.css via the "styled-form-input" class.
+// Questions answered with free text — the only ones a required rule should
+// also reject when the answer is just spaces (`whitespace: true`). antd runs
+// a rule with `whitespace` as a string rule, so adding it to any other type
+// (slider number, date, project list) would fail with a type error.
+export const isTextQuestion = (question: FormQuestion) => question.type === 'textarea' || question.type === 'text';
+
+// Leading/trailing spaces are never part of a typed answer — trimmed before
+// an answer is saved (submit and draft autosave); internal spaces are kept.
+// Typed text only (text/textarea answers, `{n}_comment` boxes, project
+// names): radio/slider values are left exactly as given so they keep
+// matching their options for scoring. Mirrors _trim_text_answers in main.py.
+export const trimTextAnswers = (questions: FormQuestion[], values: Record<string, any>) => {
+  const trimmed = { ...values };
+  const trim = (value: any) => (typeof value === 'string' ? value.trim() : value);
+  for (const question of questions) {
+    const key = String(question.question_number);
+    if (isTextQuestion(question) && key in trimmed) {
+      trimmed[key] = trim(trimmed[key]);
+    } else if (question.type === 'repeatable_text' && Array.isArray(trimmed[key])) {
+      trimmed[key] = trimmed[key].map((entry: any) =>
+        entry && typeof entry === 'object' && typeof entry.name === 'string'
+          ? { ...entry, name: entry.name.trim() }
+          : trim(entry)
+      );
+    }
+    const commentKey = `${key}_comment`;
+    if (question.has_comment && commentKey in trimmed) {
+      trimmed[commentKey] = trim(trimmed[commentKey]);
+    }
+  }
+  return trimmed;
+};
+
+// Keep in sync with max-height on textarea.styled-form-input in formFieldRendering.css.
+const ASSESSMENT_TEXTAREA_MAX_HEIGHT = 300;
+
+// Auto-growing answer box for the review forms (80px min, 300px max — see
+// formFieldRendering.css). Below the cap the box is sized to fit its text,
+// so its scrollbar stays hidden there: antd measures the text to whole
+// pixels, and on some displays that lands a fraction of a pixel short,
+// which would otherwise flash a scrollbar at certain line counts. Once the
+// box reaches the cap, the --at-max class turns the internal scrollbar on.
+// Form.Item's injected props (value, onChange, id) pass straight through.
+export const AssessmentTextArea: React.FC<TextAreaProps> = ({ className, onResize, ...props }) => {
+  const [atMax, setAtMax] = React.useState(false);
+  return (
+    <TextArea
+      {...props}
+      autoSize
+      className={['styled-form-input', atMax && 'styled-form-input--at-max', className].filter(Boolean).join(' ')}
+      onResize={(size) => {
+        setAtMax(size.height >= ASSESSMENT_TEXTAREA_MAX_HEIGHT - 1);
+        onResize?.(size);
+      }}
+    />
+  );
+};
+
 export const renderField = (question: FormQuestion, extraStyle?: React.CSSProperties, displayNumber?: number) => {
   const fieldStyle = { ...indentedFieldStyle, ...extraStyle };
   switch (question.type) {
     case 'textarea':
-      return <TextArea rows={2} className="styled-form-input" style={fieldStyle} />;
+      return <AssessmentTextArea style={fieldStyle} />;
     case 'date':
       return <DatePicker className="styled-form-input" style={fieldStyle} />;
     case 'radio':
@@ -197,7 +256,7 @@ export const ProjectDetailsField: React.FC<{
   const disabledDate = disableOutsideReviewPeriod(parseReviewPeriodBounds(reviewPeriod));
   return (
   <div style={{ marginBottom: 24 }}>
-    {renderQuestionLabel(question, labelFontSize, labelStyle, displayNumber)}
+    {renderQuestionLabel(question, labelFontSize, { ...labelStyle, marginBottom: 10 }, displayNumber)}
     <Form.List
       name={String(question.question_number)}
       initialValue={rehydrateProjectEntries(Array.isArray(question.answer) ? question.answer : [])}

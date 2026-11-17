@@ -5,7 +5,8 @@ import {
   FormOutlined,
   SolutionOutlined,
   IdcardOutlined,
-  TeamOutlined
+  TeamOutlined,
+  FileTextOutlined
 } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -23,6 +24,7 @@ const Sidebar: React.FC = () => {
     if (path.startsWith('/manager-evaluation')) return ['manager-Review'];
     if (path.startsWith('/hr-dashboard')) return ['hr-dashboard'];
     if (path.startsWith('/employees')) return ['employees'];
+    if (path.startsWith('/forms')) return ['forms'];
     return [];
   };
 
@@ -52,6 +54,15 @@ const Sidebar: React.FC = () => {
       label: isCDO ? 'Overall Review' : 'HR Review',
       onClick: () => {
         navigate('/hr-dashboard');
+      },
+    }] : []),
+    // Form editor (add/edit/delete questions) — HR and the CDO.
+    ...(isHR ? [{
+      key: 'forms',
+      icon: <FileTextOutlined />,
+      label: 'Forms',
+      onClick: () => {
+        navigate('/forms');
       },
     }] : []),
     // CDO shares HR-level access but shouldn't see employee management —

@@ -267,6 +267,7 @@ class JWTUtils {
     has_team?: boolean;
     is_hr?: boolean;
     is_cdo?: boolean;
+    auth_method?: string; // 'manual' (password) or 'microsoft'
     organization?: string;
     view?: boolean; // Permissions are at root level in backend JWT
     edit?: boolean;
@@ -301,6 +302,7 @@ class JWTUtils {
         has_team: p.has_team,
         is_hr: p.is_hr,
         is_cdo: p.is_cdo,
+        auth_method: p.auth_method,
         organization: p.organization || 'Dataflix Performance Review',
         view: p.view, // Include permissions at root level
         edit: p.edit,

@@ -1,4 +1,6 @@
+import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import Dict
 
@@ -25,16 +27,36 @@ def get_sync_database():
     return client.get_database_client(os.environ["COSMOS_DATABASE"])
 
 
+logger = logging.getLogger("pms")
+
+# HR can now edit form questions at runtime (see the /api/hr/forms endpoints
+# in main.py). The worker that handles an edit updates its own cache
+# immediately; every other worker/instance picks the change up within this
+# many seconds via refresh_templates_cache_if_stale below.
+TEMPLATES_CACHE_MAX_AGE_SECONDS = 60
+
+
 async def _load_templates_cache(database) -> Dict[int, dict]:
-    # Templates are static (4 rows, never written by the app at runtime) —
-    # loaded once here rather than queried per-request, so
-    # fetch_form_by_template_id-equivalent lookups are a dict lookup, not a
-    # Cosmos round trip.
+    # 4 rows, read on every request — loaded here rather than queried
+    # per-request, so fetch_form_by_template_id-equivalent lookups are a dict
+    # lookup, not a Cosmos round trip.
     container = database.get_container_client(TEMPLATES_CONTAINER)
     templates: Dict[int, dict] = {}
     async for item in container.read_all_items():
         templates[item["template_id"]] = item
     return templates
+
+
+async def refresh_templates_cache_if_stale(app: FastAPI) -> None:
+    if time.monotonic() - app.state.templates_loaded_at < TEMPLATES_CACHE_MAX_AGE_SECONDS:
+        return
+    # Stamped before the reload so concurrent requests don't all reload at once.
+    app.state.templates_loaded_at = time.monotonic()
+    try:
+        app.state.templates_cache = await _load_templates_cache(app.state.database)
+    except Exception:
+        # Keep serving the previous cache; the next stale check retries.
+        logger.exception("Failed to refresh the templates cache")
 
 
 @asynccontextmanager
@@ -47,7 +69,9 @@ async def lifespan(app: FastAPI):
     database = client.get_database_client(os.environ["COSMOS_DATABASE"])
 
     app.state.cosmos_client = client
+    app.state.database = database
     app.state.users_container = database.get_container_client(USERS_CONTAINER)
+    app.state.templates_container = database.get_container_client(TEMPLATES_CONTAINER)
     app.state.submissions_container = database.get_container_client(SUBMISSIONS_CONTAINER)
 
     # Unlike the other containers above (provisioned ahead of time, just
@@ -63,6 +87,7 @@ async def lifespan(app: FastAPI):
 
     # Load templates at startup
     app.state.templates_cache = await _load_templates_cache(database)
+    app.state.templates_loaded_at = time.monotonic()
 
     yield
 

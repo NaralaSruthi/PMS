@@ -21,8 +21,8 @@ const MONTH_NAME_PATTERN = new RegExp(Object.keys(MONTH_ABBREVIATIONS).join('|')
 // Display-only shortening of a review period label (e.g. "July 2026 -
 // December 2026" -> "Jul 2026 - Dec 2026"). The full month-name label is
 // also the Review Period question's actual stored answer and the value
-// dropdowns/filters compare against (see HRDashboard.tsx's reviewPeriodId,
-// ManagerEvaluationsList.tsx's selectedReviewPeriod) — so this must only
+// dropdowns/filters compare against (see ManagerEvaluationsList.tsx's
+// selectedReviewPeriod) — so this must only
 // wrap the text actually rendered to the user, never the value passed
 // around for matching, filtering, or submission.
 export const formatReviewPeriod = (period: string): string =>

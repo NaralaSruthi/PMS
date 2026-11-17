@@ -8,6 +8,12 @@ const { Title, Text } = Typography;
 
 const commentFieldName = (questionNumber: number) => `${questionNumber}_comment`;
 
+// Number and question text inherit the row's 16px / 1.5 — antd's Text
+// otherwise forces its own 14px / 22px, putting the number (a flex item) and
+// the question text (inline in a div still on the row's 24px line) on
+// different line boxes, so the text's first line sat ~3px below the number.
+const QUESTION_TEXT_STYLE: React.CSSProperties = { fontSize: 'inherit', lineHeight: 'inherit' };
+
 export interface ManagerEvaluationAnswersProps {
   sections: FormSection[];
   answers: Record<string, any>;
@@ -51,20 +57,21 @@ export const ManagerEvaluationAnswers: React.FC<ManagerEvaluationAnswersProps> =
                 key={question.question_number}
                 style={{ display: 'flex', marginBottom: 24, marginLeft: 8, lineHeight: 1.5, fontSize: 16, fontWeight: 600 }}
               >
-                <Text strong style={{ flexShrink: 0 }}>
+                <Text strong style={{ flexShrink: 0, ...QUESTION_TEXT_STYLE }}>
                   {displayNumber}.&nbsp;
                 </Text>
                 <div>
-                  <Text strong style={{ whiteSpace: 'pre-line' }}>
+                  <Text strong style={{ whiteSpace: 'pre-line', ...QUESTION_TEXT_STYLE }}>
                     {question.question}
                   </Text>
-                  <div style={{ whiteSpace: 'pre-wrap', fontSize: 15, fontWeight: 400, marginTop: 8 }}>
+                  <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 15, fontWeight: 400, marginTop: 8 }}>
                     {formatAnswer(answers[String(question.question_number)], question)}
                   </div>
                   {question.has_comment && answers[commentFieldName(question.question_number)] && (
                     <div
                       style={{
                         whiteSpace: 'pre-wrap',
+                        overflowWrap: 'anywhere',
                         fontSize: 15,
                         fontWeight: 400,
                         marginTop: 12,

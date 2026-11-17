@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Table, Typography, Avatar, Input, Button, Modal, Form, Select, Popconfirm, message } from 'antd';
+import { Table, Typography, Avatar, Input, Button, Modal, Form, Select, Row, Col, message } from 'antd';
 import { TeamOutlined, SearchOutlined, PlusOutlined } from '@ant-design/icons';
-import ApiService, { HREmployee, EmployeeFormValues } from '../services/apiService';
+import ApiService, { HREmployee, HRManager, EmployeeFormValues } from '../services/apiService';
 import FormLoadingState from './FormLoadingState';
 import { getInitials } from '../utils/teamStatusHelpers';
 import { useAuth } from '../contexts/AuthContext';
@@ -44,6 +44,7 @@ const Employees: React.FC = () => {
   // usable but silently fails on submit.
   const isCDO = authState.user?.isCDO || false;
   const [employees, setEmployees] = useState<HREmployee[]>([]);
+  const [currentUser, setCurrentUser] = useState<HRManager | null>(null);
   const [searchText, setSearchText] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -52,6 +53,9 @@ const Employees: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [form] = Form.useForm<EmployeeFormModalValues>();
+  // Hook form of Modal.confirm, so the confirm dialog picks up the app's
+  // dark theme (the static Modal.confirm ignores ConfigProvider).
+  const [modal, modalContextHolder] = Modal.useModal();
   // Guards against React StrictMode's dev-only double-invoke of effects.
   const hasFetchedRef = useRef(false);
 
@@ -59,8 +63,10 @@ const Employees: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const response = await ApiService.getHRDashboard();
+      // A staff directory, so the logged-in HR user is listed too.
+      const response = await ApiService.getHRDashboard(undefined, { includeSelf: true });
       setEmployees(response.employees || []);
+      setCurrentUser(response.current_user || null);
     } catch (err: any) {
       setError(err?.message || 'Failed to load employees');
     } finally {
@@ -126,6 +132,22 @@ const Employees: React.FC = () => {
     }
   };
 
+  // Centered confirmation before deleting, like every other dialog in the
+  // app (it was a Popconfirm bubble beside the button). Returning
+  // handleDelete's promise from onOk keeps the dialog open with a spinner on
+  // Delete until the request finishes, so it can't be confirmed twice.
+  const confirmDelete = (employee: HREmployee) => {
+    modal.confirm({
+      title: 'Delete this employee?',
+      content: 'This also removes them as a manager from anyone who reports to them.',
+      okText: 'Delete',
+      okButtonProps: { danger: true },
+      cancelText: 'Cancel',
+      centered: true,
+      onOk: () => handleDelete(employee),
+    });
+  };
+
   const handleDelete = async (employee: HREmployee) => {
     if (!employee.employee_id) return;
     setDeletingId(employee.employee_id);
@@ -176,9 +198,18 @@ const Employees: React.FC = () => {
   // Anyone except the employee currently being edited — a manager doesn't
   // need to exist as an already-established manager, any employee is
   // eligible, matching how assigned_employees actually works (see main.py).
-  const managerOptions = employees
+  // The roster already includes the logged-in HR user (includeSelf);
+  // currentUser is only a fallback if it ever doesn't.
+  const currentUserListed = employees.some((employee) => employee.employee_id === currentUser?.employee_id);
+  const managerOptions = [...employees, ...(currentUser && !currentUserListed ? [currentUser] : [])]
     .filter((employee) => employee.employee_id && employee.employee_id !== editingEmployee?.employee_id)
     .map((employee) => ({ value: employee.employee_id, label: employee.name }));
+
+  // HR's own row: editable, but never deletable (that would lock them out —
+  // delete_employee_endpoint in main.py refuses it too).
+  const isSelf = (record: HREmployee) =>
+    (!!currentUser?.employee_id && record.employee_id === currentUser.employee_id) ||
+    (!!record.email && record.email.toLowerCase() === authState.user?.email?.toLowerCase());
 
   const columns = [
     {
@@ -227,17 +258,16 @@ const Employees: React.FC = () => {
           <Button size="small" onClick={() => openEditModal(record)}>
             Edit
           </Button>
-          <Popconfirm
-            title="Delete this employee?"
-            description="This also removes them as a manager from anyone who reports to them."
-            okText="Delete"
-            okButtonProps={{ danger: true }}
-            onConfirm={() => handleDelete(record)}
-          >
-            <Button size="small" danger loading={deletingId === record.employee_id}>
+          {!isSelf(record) && (
+            <Button
+              size="small"
+              danger
+              loading={deletingId === record.employee_id}
+              onClick={() => confirmDelete(record)}
+            >
               Delete
             </Button>
-          </Popconfirm>
+          )}
         </div>
       ),
     },
@@ -245,11 +275,11 @@ const Employees: React.FC = () => {
 
   return (
     <div className="app-page-container">
-      <div className="app-page-header">
+      {modalContextHolder}
+      {/* 8px here plus the title's own 8px = 16px below the title, matching
+          the HR Review page. */}
+      <div className="app-page-header" style={{ marginBottom: 8 }}>
         <Title level={3} className="app-page-title">Employees</Title>
-        <Text className="app-page-description">
-          Every employee in the system, independent of any review period or evaluation status.
-        </Text>
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
@@ -271,10 +301,14 @@ const Employees: React.FC = () => {
           <EmptyEmployeesState />
         ) : (
           <Table
-            className="team-table"
+            className="team-table scrollable-team-table"
             columns={columns}
             dataSource={filteredEmployees}
             rowKey="email"
+            // Fixed header, scrolling rows — same setup as the Manager Review
+            // table (see scrollable-team-table in teamTable.css, which makes
+            // the body fill the card; the 240 is only antd's trigger).
+            scroll={{ y: 240 }}
             pagination={{
               pageSize: 10,
               showTotal: (total, range) => `Showing ${range[0]}–${range[1]} of ${total} employees`,
@@ -291,56 +325,86 @@ const Employees: React.FC = () => {
         okText={editingEmployee ? 'Save' : 'Add'}
         confirmLoading={submitting}
         destroyOnClose
+        // Vertically centered rather than antd's fixed 100px from the top,
+        // so it stays in the middle at any zoom level or window height.
+        centered
       >
-        <Form form={form} layout="vertical" onFinish={handleSubmit}>
-          <Form.Item
-            name="name"
-            label="Name"
-            rules={[{ required: true, message: 'Name is required' }]}
-          >
-            <Input />
-          </Form.Item>
-          <Form.Item
-            name="work_email"
-            label="Email"
-            rules={[{ required: true, type: 'email', message: 'A valid email is required' }]}
-          >
-            <Input />
-          </Form.Item>
-          {!editingEmployee && (
-            <Form.Item
-              name="employee_id"
-              label="Employee ID"
-              rules={[{ required: true, message: 'Employee ID is required' }]}
-            >
-              <Input />
-            </Form.Item>
-          )}
-          <Form.Item
-            name="designation"
-            label="Designation"
-            rules={editingEmployee ? [] : [{ required: true, message: 'Designation is required' }]}
-          >
-            <Input />
-          </Form.Item>
-          <Form.Item
-            name="department"
-            label="Department"
-            rules={editingEmployee ? [] : [{ required: true, message: 'Department is required' }]}
-          >
-            <Input />
-          </Form.Item>
-          <Form.Item
-            name="location"
-            label="Location"
-            rules={editingEmployee ? [] : [{ required: true, message: 'Location is required' }]}
-          >
-            <Input />
-          </Form.Item>
+        {/* Two fields per row (the Col span 12s wrap in pairs) with tighter
+            spacing, so the dialog stays short; Reporting Manager gets a full
+            row for its longer names. */}
+        <Form form={form} layout="vertical" onFinish={handleSubmit} className="employee-form-compact">
+          <Row gutter={16}>
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="name"
+                label="Name"
+                rules={[{ required: true, message: 'Name is required' }]}
+              >
+                <Input />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="work_email"
+                label="Email"
+                rules={[{ required: true, type: 'email', message: 'A valid email is required' }]}
+              >
+                <Input />
+              </Form.Item>
+            </Col>
+            {!editingEmployee && (
+              <Col xs={24} sm={12}>
+                <Form.Item
+                  name="employee_id"
+                  label="Employee ID"
+                  rules={[{ required: true, message: 'Employee ID is required' }]}
+                >
+                  <Input />
+                </Form.Item>
+              </Col>
+            )}
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="designation"
+                label="Designation"
+                rules={editingEmployee ? [] : [{ required: true, message: 'Designation is required' }]}
+              >
+                <Input />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="department"
+                label="Department"
+                rules={editingEmployee ? [] : [{ required: true, message: 'Department is required' }]}
+              >
+                <Input />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="location"
+                label="Location"
+                rules={editingEmployee ? [] : [{ required: true, message: 'Location is required' }]}
+              >
+                <Input />
+              </Form.Item>
+            </Col>
+          </Row>
           <Form.Item
             name="manager_employee_id"
             label="Reporting Manager"
-            rules={editingEmployee ? [] : [{ required: true, message: 'Reporting Manager is required' }]}
+            dependencies={['designation']}
+            rules={[
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  if (value || getFieldValue('designation') === 'President & CEO') {
+                    return Promise.resolve();
+                  }
+                  return Promise.reject(new Error('A reporting manager is required'));
+                },
+              }),
+            ]}
           >
             <Select
               allowClear

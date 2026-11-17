@@ -6,7 +6,11 @@ import '../styles/evaluationForm.css';
 
 const { Title, Text } = Typography;
 
-const QUESTION_LABEL_STYLE: React.CSSProperties = { fontWeight: 600, color: '#F4F1F8' };
+// fontSize/lineHeight inherit the row's 16px / 1.5 — antd's Text otherwise
+// forces its own 14px / 22px, so the number (a flex item) and the question
+// text (inline in a div still on the row's 24px line) sat on different line
+// boxes and the first line of text rendered ~3px below the number.
+const QUESTION_LABEL_STYLE: React.CSSProperties = { fontWeight: 600, color: '#F4F1F8', fontSize: 'inherit', lineHeight: 'inherit' };
 const ANSWER_TEXT_STYLE: React.CSSProperties = { fontSize: 15, fontWeight: 400 };
 
 // Same set selfassesment.tsx excludes from the fillable form (see
@@ -70,7 +74,7 @@ export const SelfAssessmentAnswers: React.FC<SelfAssessmentAnswersProps> = ({ se
                 <Text strong style={{ whiteSpace: 'pre-line', ...QUESTION_LABEL_STYLE }}>
                   {question.question}
                 </Text>
-                <div style={{ whiteSpace: 'pre-wrap', marginTop: 8, ...ANSWER_TEXT_STYLE }}>
+                <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', marginTop: 8, ...ANSWER_TEXT_STYLE }}>
                   {question.type === 'repeatable_text' ? (
                     <ProjectDetailsCards values={answers[String(question.question_number)]} />
                   ) : (

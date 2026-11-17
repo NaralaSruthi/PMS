@@ -3,8 +3,12 @@ import { emitServerError } from './serverErrorBus';
 // API Service for backend endpoints used by Login, Dashboard, and Self-Assessment
 // Centralized API management with proper error handling and token management
 
-// Use the API URL directly in both development and production
-const API_BASE_URL = (process.env.REACT_APP_API_URL || 'https://dataflix-pms-api-gthnbkasd6fvgzc3.eastus-01.azurewebsites.net').replace('-test', '');
+// Baked in at build time from .env — deliberately no fallback, so a build
+// missing it fails loudly instead of silently calling the production API.
+const API_BASE_URL = process.env.REACT_APP_API_URL || '';
+if (!API_BASE_URL) {
+  console.error('REACT_APP_API_URL is not set — set it in .env and rebuild. API calls will fail.');
+}
 
 const DEFAULT_500_TITLE = 'Unable to Load Details';
 const DEFAULT_500_MESSAGE =
@@ -56,6 +60,11 @@ export interface FormQuestion {
   // Whether this question must be answered before Next/Submit — a required
   // Form.Item validation rule reads this, not the question's own type.
   required?: boolean;
+  // Points, set by HR on the Forms page (Manager/HR Review only) — a question
+  // without them isn't scored. Single choice: points per option; slider: the
+  // points a full-range answer earns (earned in proportion to the value).
+  option_points?: Record<string, number>;
+  max_points?: number;
 }
 
 export interface FormStyles {
@@ -121,6 +130,10 @@ export interface FormSubmissionStatus {
   approval_by?: string | null;
   approval_at?: string | null;
   history?: ReviewHistoryEvent[];
+  // True once the Overall Review has been submitted for this employee's
+  // current period — every review form for that period is then read-only
+  // (see _is_period_locked in main.py, which enforces the same lock).
+  locked?: boolean;
   // Only ever present when submitted is false — the server-persisted
   // autosave (see PUT .../draft in main.py) for this exact form, or null if
   // nothing's been saved yet.
@@ -146,6 +159,9 @@ export interface TeamMemberSubmission {
   // main.py) — a server-persisted draft exists for this employee's Manager
   // Evaluation.
   has_draft?: boolean;
+  // Manager Evaluation only, once submitted: HR/the CDO's decision —
+  // "approved", "rejected", or null while pending.
+  approval_status?: string | null;
 }
 
 export interface TeamSubmissionsResponse {
@@ -183,26 +199,35 @@ export interface HREmployee {
   manager_ids?: string[];
   manager_name?: string;
   self_assessment: HRAssessmentStatus;
-  // score_percentage: computed server-side (see get_hr_employees in main.py)
-  // from the same _score_submission logic ManagerEvaluationsList's Score
-  // column and EvaluationSummary's donut already use — powers
-  // OverallReviewTab's combined score without it having to separately fetch
-  // and recompute this from the raw template+submission itself. Undefined
-  // when not submitted, or the template has no rating questions at all.
-  manager_evaluation: HRAssessmentStatus & { has_manager: boolean; score_percentage?: number };
-  hr_evaluation: HRAssessmentStatus & { score_percentage?: number };
+  // score / max_score: points earned / possible, stored on the submission
+  // (see _score_fields in main.py); score_percentage is the same as a %.
+  // OverallReviewTab adds Manager + HR points for the Overall Score.
+  // Undefined when not submitted, or the form has no scored questions.
+  // approval_status: "approved" | "rejected" | undefined — gates the Overall
+  // Review tab's Approve button (see overallReviewAvailable in
+  // HREmployeeDetails.tsx and OVERALL_REVIEW_TEMPLATE_ID's gate in main.py).
+  manager_evaluation: HRAssessmentStatus & { has_manager: boolean; approval_status?: string } & ReviewScore;
+  hr_evaluation: HRAssessmentStatus & ReviewScore;
   // No review_period field — the Overall Review pseudo-template has no
   // "Review Period" question at all (see OVERALL_REVIEW_TEMPLATE_ID in
   // main.py), so approval is tracked as a one-time, period-agnostic act.
   overall_review: Pick<HRAssessmentStatus, 'submitted' | 'submitted_at'>;
 }
 
+export interface ReviewScore {
+  score?: number;
+  max_score?: number;
+  score_percentage?: number;
+}
+
 export interface MyDashboardResponse {
   manager_name?: string;
   performance_cycle: PerformanceCycle;
   self_assessment: HRAssessmentStatus;
-  manager_evaluation: HRAssessmentStatus;
-  hr_evaluation: HRAssessmentStatus;
+  // Same stored scores as HREmployee's own fields above — powers the
+  // employee's own Overall Review tab exactly the way it powers HR's.
+  manager_evaluation: HRAssessmentStatus & ReviewScore;
+  hr_evaluation: HRAssessmentStatus & ReviewScore;
   // No review_period field — same reason as HREmployee's own overall_review:
   // the Overall Review pseudo-template has no "Review Period" question at
   // all, so approval is tracked as a one-time, period-agnostic act.
@@ -223,11 +248,66 @@ export interface HRManager {
   name: string;
 }
 
+// One selectable period on the HR Dashboard. review_period_id is the stored
+// form ("Jul 2026 - Dec 2026") the API accepts; label is the full-month
+// display form ("July 2026 - December 2026").
+export interface ReviewPeriodOption {
+  review_period_id: string;
+  label: string;
+  is_current: boolean;
+}
+
 export interface HRDashboardResponse {
+  // The period this roster is for — the current one unless HR asked for a
+  // previous one (see get_hr_employees in main.py).
+  review_period_id: string;
   review_period: string;
+  current_review_period_id: string;
+  // Every period HR can switch to (only the current one for the CDO).
+  review_period_options: ReviewPeriodOption[];
   review_periods: string[];
   managers: HRManager[];
   employees: HREmployee[];
+  // The logged-in HR user — not in `employees`, but selectable as a
+  // reporting manager in the Employees tab.
+  current_user?: HRManager | null;
+}
+
+// HR form editor (see /api/hr/forms in main.py). is_system marks questions
+// the app finds by their exact wording (Employee Name, Review Period, ...):
+// they can be moved, but not renamed, retyped, or deleted.
+export type EditableFormQuestion = FormQuestion & { is_system: boolean };
+
+export interface EditableForm {
+  template_id: number;
+  title?: string;
+  header_title?: string;
+  questions: EditableFormQuestion[];
+}
+
+export interface EditableFormsResponse {
+  forms: EditableForm[];
+}
+
+export type FormQuestionType = 'textarea' | 'text' | 'date' | 'radio' | 'slider' | 'repeatable_text';
+
+// Body for adding/editing a question — options/has_comment/comment_label
+// apply to radio only, min/max/step to slider only.
+export interface FormQuestionValues {
+  question: string;
+  type: FormQuestionType;
+  section?: string;
+  order?: number;
+  required?: boolean;
+  description?: string;
+  options?: string[];
+  has_comment?: boolean;
+  comment_label?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  option_points?: Record<string, number>;
+  max_points?: number;
 }
 
 // Shared by createEmployee/updateEmployee — manager_employee_id sets this
@@ -330,7 +410,7 @@ class ApiService {
         }
 
         const backendMessage =
-          data.message || data.error || `HTTP ${response.status}: ${response.statusText}`;
+          data.message || data.error || data.detail || `HTTP ${response.status}: ${response.statusText}`;
         const errorMessage = response.status === 500 ? DEFAULT_500_MESSAGE : backendMessage;
 
         // Skip logging for "Internal API error: 400" pattern as it's often a false positive
@@ -401,19 +481,14 @@ class ApiService {
     }
   }
 
-  // Microsoft 365 login - exchange Microsoft authentication for backend JWT token
-  // Uses the same /login endpoint as manual login, but with Microsoft user data
-  static async microsoftLogin(microsoftUser: {
-    email: string;
-    name: string;
-    id: string;
-  }): Promise<LoginResponse> {
+  // Microsoft 365 login - exchange the MSAL ID token for a backend JWT token.
+  // The backend verifies the ID token's signature with Microsoft and reads the
+  // email from it, so the browser never gets to assert who the user is.
+  static async microsoftLogin(idToken: string): Promise<LoginResponse> {
     try {
-      const response = await this.makeRequest<LoginResponse>('/login', {
+      const response = await this.makeRequest<LoginResponse>('/login/microsoft', {
         method: 'POST',
-        body: JSON.stringify({
-          username: microsoftUser.email // Only send username (login email)
-        }),
+        body: JSON.stringify({ id_token: idToken }),
       }, true); // Mark as public endpoint - don't send Authorization header
       return response;
     } catch (error) {
@@ -447,11 +522,17 @@ class ApiService {
   // Both halves of what useSectionedFormTemplate/HRSelfAssessmentTab/
   // OverallReviewTab always fetched as a getFormTemplate+getFormSubmission
   // pair, in one round trip — see get_form_with_submission in main.py.
+  // reviewPeriodId: HR-only, to view a previous period (read-only); omit for
+  // the current period.
   static async getFormWithSubmission(
     templateId: number | string,
-    employeeId?: string
+    employeeId?: string,
+    reviewPeriodId?: string
   ): Promise<{ template: FormTemplateResponse; submission: FormSubmissionStatus }> {
-    const query = employeeId ? `?employee_id=${encodeURIComponent(employeeId)}` : '';
+    const params = new URLSearchParams();
+    if (employeeId) params.set('employee_id', employeeId);
+    if (reviewPeriodId) params.set('review_period_id', reviewPeriodId);
+    const query = params.toString() ? `?${params.toString()}` : '';
     return this.makeRequest(`/api/forms/${encodeURIComponent(templateId)}/full${query}`, {
       method: 'GET',
     });
@@ -518,8 +599,19 @@ class ApiService {
   // HR-only: org-wide self-assessment + manager-evaluation status for every
   // employee (not scoped to any one manager's reports). Backend 403s if the
   // caller isn't HR.
-  static async getHRDashboard(): Promise<HRDashboardResponse> {
-    return this.makeRequest('/api/hr/employees', {
+  // reviewPeriodId: HR-only, to load a previous period's roster; omit for the
+  // current period.
+  // includeSelf: also list the logged-in user (the Employees tab only — the
+  // HR Review dashboard leaves them off so HR never reviews themselves).
+  static async getHRDashboard(
+    reviewPeriodId?: string,
+    { includeSelf = false }: { includeSelf?: boolean } = {}
+  ): Promise<HRDashboardResponse> {
+    const params = new URLSearchParams();
+    if (reviewPeriodId) params.set('review_period_id', reviewPeriodId);
+    if (includeSelf) params.set('include_self', 'true');
+    const query = params.toString() ? `?${params.toString()}` : '';
+    return this.makeRequest(`/api/hr/employees${query}`, {
       method: 'GET',
     });
   }
@@ -556,6 +648,67 @@ class ApiService {
     return this.makeRequest(`/api/hr/employees/${encodeURIComponent(employeeId)}`, {
       method: 'DELETE',
     });
+  }
+
+  // HR-only form editor (see /api/hr/forms in main.py): the four review
+  // forms with their questions, as stored.
+  static async getEditableForms(): Promise<EditableFormsResponse> {
+    return this.makeRequest('/api/hr/forms', {
+      method: 'GET',
+    });
+  }
+
+  // Whether any submission or draft has answered this question — once one
+  // has, its type can't be changed (see update_form_question in main.py).
+  // How many submitted reviews of this form a points change would re-score
+  // (open) vs leave as they are (locked by an approved Overall Review).
+  static async getRescorePreview(templateId: number): Promise<{ open: number; locked: number }> {
+    return this.makeRequest(`/api/hr/forms/${encodeURIComponent(templateId)}/rescore-preview`, {
+      method: 'GET',
+    });
+  }
+
+  static async getFormQuestionHasAnswers(templateId: number, questionNumber: number): Promise<{ has_answers: boolean }> {
+    return this.makeRequest(
+      `/api/hr/forms/${encodeURIComponent(templateId)}/questions/${encodeURIComponent(questionNumber)}/has-answers`,
+      {
+        method: 'GET',
+      }
+    );
+  }
+
+  // Each mutation returns the whole updated form, so the page can re-render
+  // straight from the response.
+  static async addFormQuestion(templateId: number, values: FormQuestionValues): Promise<EditableForm> {
+    return this.makeRequest(`/api/hr/forms/${encodeURIComponent(templateId)}/questions`, {
+      method: 'POST',
+      body: JSON.stringify(values),
+    });
+  }
+
+  static async updateFormQuestion(
+    templateId: number,
+    questionNumber: number,
+    values: FormQuestionValues
+  ): Promise<EditableForm> {
+    return this.makeRequest(
+      `/api/hr/forms/${encodeURIComponent(templateId)}/questions/${encodeURIComponent(questionNumber)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(values),
+      }
+    );
+  }
+
+  // Removes the question from the stored form. Answers already saved for it
+  // stay in their submissions but are no longer shown.
+  static async deleteFormQuestion(templateId: number, questionNumber: number): Promise<EditableForm> {
+    return this.makeRequest(
+      `/api/hr/forms/${encodeURIComponent(templateId)}/questions/${encodeURIComponent(questionNumber)}`,
+      {
+        method: 'DELETE',
+      }
+    );
   }
 }
 

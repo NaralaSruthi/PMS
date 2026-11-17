@@ -18,12 +18,9 @@ export const RATING_OPTIONS_DISPLAY_ORDER = ['Outstanding', 'Meets', 'Does not m
 // comment box.
 export const NEUTRAL_RATING_LABEL = 'Meets';
 
-// Same point scale as backend's RATING_OPTION_POINTS in main.py (_score_submission)
-// — mirrored here so the live Evaluation Summary donut can show a quality
-// score (not just how many questions have been answered) without waiting on
-// a submission to exist to ask the backend for it.
-const RATING_POINTS: Record<string, number> = { 'Does not meet': 1, Meets: 2, Outstanding: 3 };
-const MAX_POINTS_PER_QUESTION = 3;
+// Category a slider answer falls into for the donut's three slices (lower /
+// middle / upper third of its range) — display only; points come from the
+// question's own max_points (see questionPoints below).
 const POINTS_TO_LABEL: Record<number, string> = { 1: 'Does not meet', 2: 'Meets', 3: 'Outstanding' };
 
 const isRatingRadioQuestion = (question: FormQuestion) =>
@@ -37,6 +34,32 @@ const isRatingRadioQuestion = (question: FormQuestion) =>
 // below, splitting its min-max range into even thirds.
 export const isRatingQuestion = (question: FormQuestion) =>
   isRatingRadioQuestion(question) || question.type === 'slider';
+
+// Points come from the question itself (set by HR on the Forms page), never
+// from code — same rules as _question_max_points/_question_points in main.py
+// so the live donut always matches the score saved on submit. Undefined =
+// the question isn't scored (no points assigned).
+export const questionMaxPoints = (question: FormQuestion): number | undefined => {
+  if (question.type === 'slider') {
+    return typeof question.max_points === 'number' && question.max_points > 0 ? question.max_points : undefined;
+  }
+  const values = Object.values(question.option_points || {});
+  return values.length ? Math.max(...values) : undefined;
+};
+
+const questionPoints = (question: FormQuestion, answer: any): number | undefined => {
+  if (answer === undefined || answer === null || answer === '') return undefined;
+  if (question.type === 'slider') {
+    const value = Number(answer);
+    const lo = question.min ?? 0;
+    const hi = question.max ?? 10;
+    if (Number.isNaN(value) || hi <= lo || !question.max_points) return undefined;
+    const fraction = Math.min(Math.max((value - lo) / (hi - lo), 0), 1);
+    return Math.round(fraction * question.max_points * 100) / 100;
+  }
+  const points = question.option_points?.[answer];
+  return typeof points === 'number' ? points : undefined;
+};
 
 // Buckets a slider answer into Does not meet/Meets/Outstanding by splitting
 // its min-max range into even thirds (e.g. a 0-10 slider: 0-3.3 = Does not
@@ -65,21 +88,25 @@ export interface RatingSummaryRow {
 export interface RatingSummary {
   totalEligible: number;
   answered: number;
-  // Quality of the ratings given so far (points earned / points possible for
-  // just the *answered* questions, e.g. all "Outstanding" so far = 100%) —
-  // distinct from completion (answered / totalEligible), which this summary
-  // deliberately does not surface as its headline number. Undefined (not 0)
-  // when nothing's been answered yet, since 0% would misleadingly read as
-  // "worst possible" rather than "nothing to score yet".
+  // Points earned / possible over every scored question on the form (an
+  // unanswered one earns 0) — the same totals _score_submission in main.py
+  // saves on submit. possiblePoints is 0 when no question has points yet.
+  earnedPoints: number;
+  possiblePoints: number;
+  // earned / possible as a %; undefined (not 0) until something's answered,
+  // since 0% would misleadingly read as "worst possible".
   scorePercentage: number | undefined;
   rows: RatingSummaryRow[];
+  // False while any required rating question is still unanswered —
+  // EvaluationSummary shows "Incomplete" from it.
+  complete: boolean;
 }
 
-// Shared by ManagerEvaluation.tsx (the manager's own fill-out/view) and
+// Shared by ManagerEvaluation.tsx (the manager's own fill-out/view),
 // HRManagerEvaluationTab.tsx (HR's read-only/edit view of the same
-// template) — both need the identical eligibility rule and tally so the two
-// surfaces can never quietly drift apart on what counts as "a rating" or how
-// its percentage is computed.
+// template), and HREvaluationTab.tsx — all need the identical eligibility
+// rule and tally so they can never quietly drift apart on what counts as
+// "a rating" or how its percentage is computed.
 export function computeRatingSummary(
   questions: FormQuestion[],
   answerSource: Record<string, any>
@@ -88,13 +115,27 @@ export function computeRatingSummary(
   const ratingCounts: Record<string, number> = { 'Does not meet': 0, Meets: 0, Outstanding: 0 };
   let answered = 0;
   let earnedPoints = 0;
+  let possiblePoints = 0;
+  let pointsAnswered = 0;
+  let requiredUnanswered = 0;
+  for (const question of questions) {
+    const maxPoints = questionMaxPoints(question);
+    if (maxPoints === undefined) continue;
+    possiblePoints += maxPoints;
+    const points = questionPoints(question, answerSource[String(question.question_number)]);
+    if (points !== undefined) {
+      earnedPoints += points;
+      pointsAnswered += 1;
+    }
+  }
   for (const question of ratingQuestions) {
     const rawAnswer = answerSource[String(question.question_number)];
     const label = question.type === 'slider' ? sliderRatingLabel(question, rawAnswer) : rawAnswer;
     if (label && label in ratingCounts) {
       ratingCounts[label] += 1;
       answered += 1;
-      earnedPoints += RATING_POINTS[label];
+    } else if (question.required !== false) {
+      requiredUnanswered += 1;
     }
   }
   // Percentages are of *answered* rating questions only (never the total,
@@ -103,8 +144,10 @@ export function computeRatingSummary(
   return {
     totalEligible: ratingQuestions.length,
     answered,
-    scorePercentage:
-      answered > 0 ? Math.round((earnedPoints / (answered * MAX_POINTS_PER_QUESTION)) * 100) : undefined,
+    earnedPoints: Math.round(earnedPoints * 100) / 100,
+    possiblePoints: Math.round(possiblePoints * 100) / 100,
+    scorePercentage: pointsAnswered > 0 && possiblePoints > 0 ? (earnedPoints / possiblePoints) * 100 : undefined,
+    complete: requiredUnanswered === 0,
     rows: RATING_OPTIONS_DISPLAY_ORDER.map((label) => ({
       label,
       count: ratingCounts[label],
@@ -118,5 +161,5 @@ export function computeRatingSummary(
 // itself (a fresh object every render), so effects fire only when the tally
 // truly changes.
 export function ratingSummaryKey(summary: RatingSummary): string {
-  return `${summary.totalEligible}:${summary.answered}:${summary.rows.map((row) => `${row.label}=${row.count}`).join(',')}`;
+  return `${summary.totalEligible}:${summary.answered}:${summary.complete}:${summary.rows.map((row) => `${row.label}=${row.count}`).join(',')}`;
 }

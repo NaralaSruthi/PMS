@@ -1,16 +1,17 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { Form, Typography, Button } from 'antd';
 import { ArrowRightOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { FormQuestion, FormSubmissionStatus, FormTemplateResponse } from '../services/apiService';
 import { useSectionedFormTemplate } from '../hooks/useSectionedFormTemplate';
+import { useSubmitConfirmation } from '../hooks/useSubmitConfirmation';
 import {
   renderField,
   renderQuestionLabel,
   ProjectDetailsField,
-  rehydrateProjectEntries,
   buildQuestionDisplayNumbers,
+  isTextQuestion,
 } from '../utils/formFieldRendering';
 import { formatReviewPeriod } from '../utils/reviewPeriodFormat';
 import { useAuth } from '../contexts/AuthContext';
@@ -77,7 +78,6 @@ const SelfAssessment: React.FC<SelfAssessmentProps> = ({ templateId: templateIdP
   const navigate = useNavigate();
   const handleBack = onBack ?? (() => navigate('/hr-dashboard'));
   const { authState } = useAuth();
-  const isHR = authState.user?.isHR || false;
   const [form] = Form.useForm();
   const {
     template,
@@ -97,6 +97,7 @@ const SelfAssessment: React.FC<SelfAssessmentProps> = ({ templateId: templateIdP
     handleSubmit,
     handleValuesChange,
   } = useSectionedFormTemplate(form, templateId, employeeId, isAutoFilledQuestion, preloadedForm);
+  const { confirmSubmit, contextHolder: submitConfirmHolder } = useSubmitConfirmation();
 
   // Pre-fill questions whose answer is already known, rather than leaving
   // them blank for the employee to retype. Matched by exact question text,
@@ -143,56 +144,6 @@ const SelfAssessment: React.FC<SelfAssessmentProps> = ({ templateId: templateIdP
     form.setFieldValue(String(employeeNameQuestion.question_number), targetName);
   }, [template, targetName, form]);
 
-  // HR-only: reopen an already-submitted assessment as an editable form
-  // instead of the read-only view. Never available for a regular employee
-  // viewing their own submission — only when isHR and a specific employee_id
-  // was targeted (mirrors the same condition the backend now requires for an
-  // update to be accepted instead of a 409 — see submit_form in main.py).
-  const [isEditing, setIsEditing] = useState(false);
-  const canEdit = isHR && !!employeeId;
-
-  // Prefill the form with the actual submitted answers when entering edit
-  // mode — same rehydration approach useSectionedFormTemplate already uses
-  // to restore a server-persisted draft (dayjs conversion for date fields, and
-  // for Project Details' start_month/end_month), just seeded from the real
-  // submission instead of a draft.
-  useEffect(() => {
-    if (!isEditing || !submittedAnswers || !template) return;
-    const dateFieldNames = new Set(
-      template.questions.filter((q) => q.type === 'date').map((q) => String(q.question_number))
-    );
-    const repeatableTextFieldNames = new Set(
-      template.questions.filter((q) => q.type === 'repeatable_text').map((q) => String(q.question_number))
-    );
-    const restored: Record<string, any> = {};
-    for (const [key, value] of Object.entries(submittedAnswers)) {
-      if (dateFieldNames.has(key) && value) {
-        restored[key] = dayjs(value as string);
-      } else if (repeatableTextFieldNames.has(key)) {
-        restored[key] = rehydrateProjectEntries(value);
-      } else {
-        restored[key] = value;
-      }
-    }
-    form.setFieldsValue(restored);
-  }, [isEditing, submittedAnswers, template, form]);
-
-  // Flips back to the read-only view once a submit attempt made while
-  // editing has actually finished (tracked via the true->false transition of
-  // the hook's own `submitting` flag, not form.submit()'s return value —
-  // antd's Form.submit() doesn't return a promise tied to onFinish
-  // completing). handleSubmit reports failures via message.error rather than
-  // a rejected promise, so this can't perfectly distinguish success from
-  // failure — on a genuine failure the read-only view just shows the
-  // previous (unchanged) submitted answers, and Edit can be clicked again.
-  const wasSubmittingRef = useRef(false);
-  useEffect(() => {
-    if (wasSubmittingRef.current && !submitting && isEditing) {
-      setIsEditing(false);
-    }
-    wasSubmittingRef.current = submitting;
-  }, [submitting, isEditing]);
-
   if (loading) {
     return <FormLoadingState />;
   }
@@ -218,7 +169,10 @@ const SelfAssessment: React.FC<SelfAssessmentProps> = ({ templateId: templateIdP
   // buildQuestionDisplayNumbers for why this differs from question_number.
   const questionDisplayNumbers = buildQuestionDisplayNumbers(fillableSections);
 
-  if (submittedAnswers && !isEditing) {
+  // A submitted Self Review is always read-only — including for HR, who can
+  // view it but never edit it (the backend rejects a Self Review submitted
+  // or drafted for anyone but yourself).
+  if (submittedAnswers) {
     return (
       <div className="evaluation-form-page">
         <div className="evaluation-form-card">
@@ -239,11 +193,6 @@ const SelfAssessment: React.FC<SelfAssessmentProps> = ({ templateId: templateIdP
           )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
             <Text type="success">Your responses have been submitted.</Text>
-            {canEdit && (
-              <Button type="primary" size="small" onClick={() => setIsEditing(true)}>
-                Edit
-              </Button>
-            )}
           </div>
 
           <div style={{ marginTop: 32 }}>
@@ -273,10 +222,12 @@ const SelfAssessment: React.FC<SelfAssessmentProps> = ({ templateId: templateIdP
         )}
         <FormHeader title={displayTitle} description={template.header_title} showDescription={isFirstSection} />
 
+        {submitConfirmHolder}
         <Form
           form={form}
           layout="vertical"
-          onFinish={handleSubmit}
+          // Validation has passed by the time onFinish runs — confirm first.
+          onFinish={(values) => confirmSubmit('Submit Self Review?', () => handleSubmit(values))}
           onValuesChange={handleValuesChange}
           onKeyDown={(e) => {
             // Pressing Enter in a text-like input (e.g. the date picker) natively
@@ -343,6 +294,10 @@ const SelfAssessment: React.FC<SelfAssessmentProps> = ({ templateId: templateIdP
                     rules={[
                       {
                         required: true,
+                        // Spaces alone don't count as an answer. Text types
+                        // only: antd treats a `whitespace` rule as a string
+                        // rule, which would reject slider/date/list values.
+                        ...(isTextQuestion(question) ? { whitespace: true } : {}),
                         message: question.type === 'slider' ? 'Please provide a rating.' : 'This field is required',
                       },
                     ]}
@@ -355,11 +310,6 @@ const SelfAssessment: React.FC<SelfAssessmentProps> = ({ templateId: templateIdP
           ))}
 
           <Form.Item className="evaluation-form-actions">
-            {isEditing && (
-              <Button onClick={() => setIsEditing(false)}>
-                Cancel
-              </Button>
-            )}
             {!isFirstSection && (
               <Button className="evaluation-secondary-btn" onClick={handlePrevious}>
                 Previous

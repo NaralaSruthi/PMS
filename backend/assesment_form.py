@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+from azure.core import MatchConditions
 from azure.cosmos.exceptions import CosmosHttpResponseError, CosmosResourceNotFoundError
 
 
@@ -168,6 +169,51 @@ async def fetch_form_by_template_id(templates_cache: Dict[int, dict], template_i
     return _as_namespace(templates_cache.get(template_id))
 
 
+async def fetch_template_document(templates_container, template_id: int) -> Optional[dict]:
+    # Fresh read straight from Cosmos (not the templates cache) — used by
+    # HR's form editor (see the /api/hr/forms endpoints in main.py) so an
+    # edit always starts from the latest stored version, even if another
+    # worker's cache hasn't refreshed yet. Raw dict, since it's written back
+    # whole by replace_template_document below.
+    query = "SELECT * FROM c WHERE c.template_id = @template_id"
+    params = [{"name": "@template_id", "value": template_id}]
+    async for item in templates_container.query_items(query=query, parameters=params):
+        return item
+    return None
+
+
+async def replace_template_document(templates_container, document: dict) -> dict:
+    # Whole-document replace; the partition key is read from the document
+    # itself. Returns the stored version so callers can refresh their cache.
+    # Conditional on the _etag the document was read with: if someone else
+    # saved this form in between, Cosmos rejects the write
+    # (CosmosAccessConditionFailedError) instead of silently overwriting
+    # their change — see _save_template in main.py.
+    etag = document.get("_etag")
+    if etag:
+        return await templates_container.replace_item(
+            item=document["id"], body=document, etag=etag, match_condition=MatchConditions.IfNotModified
+        )
+    return await templates_container.replace_item(item=document["id"], body=document)
+
+
+async def question_has_answers(
+    submissions_container, drafts_container, template_id: int, question_number: int
+) -> bool:
+    # Whether any submission or draft of this form has an answer stored under
+    # this question number — used to stop HR changing a question's type once
+    # answers exist (an old answer of a different shape would no longer
+    # display or reload correctly). Cross-partition, but TOP 1 stops at the
+    # first match. question_number is an int, so building the property path
+    # from it is safe.
+    query = f'SELECT TOP 1 c.id FROM c WHERE c.template_id = @template_id AND IS_DEFINED(c.answers["{int(question_number)}"])'
+    params = [{"name": "@template_id", "value": template_id}]
+    for container in (submissions_container, drafts_container):
+        async for _ in container.query_items(query=query, parameters=params):
+            return True
+    return False
+
+
 def _submission_id(template_id: int, review_period_id: Optional[str]) -> str:
     # Submissions (including the Overall Review) are scoped one-per-review-
     # period. Identity is server-authoritative: callers always pass the
@@ -187,6 +233,7 @@ async def insert_form_submission(
     answers: Dict[str, Any],
     review_period_id: Optional[str] = None,
     actor_name: Optional[str] = None,
+    scoring: Optional[Dict[str, Any]] = None,
 ):
     employee_email = employee_email.lower()
     submitted_at = _now_iso()
@@ -213,6 +260,10 @@ async def insert_form_submission(
             # ever reflect the CURRENT decision and do get overwritten/
             # cleared.
             "history": [first_event],
+            # Manager/HR Review only: points earned per question and totals,
+            # worked out from the form's points at submit time (see
+            # _score_submission in main.py) — None for unscored forms.
+            **({"scoring": scoring} if scoring is not None else {}),
         }
     )
 
@@ -224,12 +275,16 @@ async def update_form_submission(
     answers: Dict[str, Any],
     review_period_id: Optional[str] = None,
     actor_name: Optional[str] = None,
+    scoring: Optional[Dict[str, Any]] = None,
 ):
     employee_email = employee_email.lower()
     item = await submissions_container.read_item(
         item=_submission_id(template_id, review_period_id), partition_key=employee_email
     )
     item["answers"] = answers
+    # Re-scored from the new answers with the form's current points.
+    if scoring is not None:
+        item["scoring"] = scoring
     item["submitted_at"] = _now_iso()
     # A resubmission invalidates whatever approval decision was made against
     # the PREVIOUS answers — most relevantly, this is what actually reopens a
@@ -360,27 +415,54 @@ async def fetch_submission(
     return _as_namespace(item)
 
 
-async def fetch_submissions_for_employee(submissions_container, employee_email: str, current_review_period_id: str):
-    # The CURRENT period's 1001/1002/1003/1004 submissions — one single-
-    # partition query per employee, used by get_hr_employees to replace 4
-    # separate fetch_submission point reads. Filtering server-side to
-    # current_review_period_id (rather than fetching every period ever
-    # submitted) keeps the result set to at most one document per
-    # template_id, so keying the returned dict by template_id can't collide
-    # now that multiple periods' worth of submissions coexist in the same
-    # partition. The Overall Review used to need a separate OR'd-in clause
-    # here (it had no review_period_id of its own) — now that it's scoped
-    # the same way as every other template, it's naturally covered by this
-    # one condition too.
-    query = "SELECT * FROM c WHERE c.employee_email = @employee_email AND c.review_period_id = @current_review_period_id"
-    params = [
-        {"name": "@employee_email", "value": employee_email.lower()},
-        {"name": "@current_review_period_id", "value": current_review_period_id},
-    ]
-    items = [
-        item
-        async for item in submissions_container.query_items(
-            query=query, parameters=params, partition_key=employee_email.lower()
-        )
-    ]
-    return {item["template_id"]: _as_namespace(item) for item in items}
+async def fetch_submissions_for_template(submissions_container, template_id: int) -> List[dict]:
+    # Every submission of one form, org-wide and across all periods — used to
+    # re-score open reviews after HR changes the form's points (see
+    # _rescore_open_submissions in main.py). Cross-partition, but only run on
+    # a form edit, never on a normal page load.
+    query = "SELECT * FROM c WHERE c.template_id = @template_id"
+    params = [{"name": "@template_id", "value": template_id}]
+    return [item async for item in submissions_container.query_items(query=query, parameters=params)]
+
+
+async def set_submission_scoring(submissions_container, item: dict, scoring: Dict[str, Any]) -> None:
+    # Replaces only the stored scoring of an already-read submission document
+    # (answers, history and approval are untouched).
+    item["scoring"] = scoring
+    await submissions_container.replace_item(item=item["id"], body=item)
+
+
+async def fetch_review_period_ids(submissions_container) -> List[str]:
+    # Every review period that has at least one submission, org-wide — feeds
+    # the HR Dashboard's period selector (see get_hr_employees in main.py).
+    # Cross-partition scan, but only one small field per document and only
+    # called once per dashboard load. De-duplicated here as well as by
+    # DISTINCT, since cross-partition DISTINCT can return a value once per
+    # partition range.
+    query = "SELECT DISTINCT VALUE c.review_period_id FROM c"
+    seen = set()
+    async for value in submissions_container.query_items(query=query):
+        if value:
+            seen.add(value)
+    return list(seen)
+
+
+async def fetch_submissions_for_period(
+    submissions_container, review_period_id: str
+) -> Dict[str, Dict[int, SimpleNamespace]]:
+    # Every employee's 1001/1002/1003/1004 submissions for one review period,
+    # in ONE cross-partition query — returned as
+    # {employee_email (lower-cased): {template_id: submission}}. Used by
+    # get_hr_employees, which previously ran one single-partition query per
+    # employee in sequence: ~80 back-to-back round trips for the whole roster
+    # (measured at 2.2-2.5 s in the Nov 2026 load test), growing with
+    # headcount. A submission's id is "{template_id}_{review_period_id}"
+    # within its employee_email partition, so filtering to one period leaves
+    # at most one document per (employee, template) and the inner dict can't
+    # collide.
+    query = "SELECT * FROM c WHERE c.review_period_id = @review_period_id"
+    params = [{"name": "@review_period_id", "value": review_period_id}]
+    by_employee: Dict[str, Dict[int, SimpleNamespace]] = {}
+    async for item in submissions_container.query_items(query=query, parameters=params):
+        by_employee.setdefault(item["employee_email"].lower(), {})[item["template_id"]] = _as_namespace(item)
+    return by_employee
