@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import logging
 import os
 import re
@@ -11,7 +10,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import bcrypt
 import jwt
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -402,11 +400,6 @@ def _current_performance_cycle() -> Dict[str, Any]:
     }
 
 
-class LoginRequest(BaseModel):
-    username: str
-    password: str  # base64-encoded by the frontend before sending
-
-
 class MicrosoftLoginRequest(BaseModel):
     id_token: str  # MSAL ID token, verified server-side before use
 
@@ -513,43 +506,6 @@ def _issue_token(
         JWT_SECRET,
         algorithm="HS256",
     )
-
-
-# Username/password sign-in — for local testing only. The /login route is
-# registered only when ENABLE_MANUAL_LOGIN=true is set (e.g. in backend/.env),
-# so anywhere without it (production) the endpoint doesn't exist (404).
-MANUAL_LOGIN_ENABLED = os.environ.get("ENABLE_MANUAL_LOGIN", "").strip().lower() == "true"
-
-
-async def login(payload: LoginRequest, request: Request):
-    try:
-        decoded_password = base64.b64decode(payload.password).decode("utf-8")
-    except Exception:
-        decoded_password = payload.password
-
-    users_container = request.app.state.users_container
-    user = await fetch_user_by_email(users_container, payload.username)
-
-    if user is None or not user.password_hash:
-        return {
-            "success": False,
-            "message": "Invalid username or password"
-        }
-
-    if not bcrypt.checkpw(
-        decoded_password.encode("utf-8"),
-        user.password_hash.encode("utf-8")
-    ):
-        return {
-            "success": False,
-            "message": "Invalid username or password"
-        }
-
-    return await _login_success(users_container, user, auth_method="manual")
-
-
-if MANUAL_LOGIN_ENABLED:
-    app.post("/login")(login)
 
 
 async def _login_success(users_container, user, *, auth_method: str):

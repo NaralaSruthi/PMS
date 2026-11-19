@@ -1,16 +1,7 @@
-// Authentication service for Microsoft 365 and manual login
+// Authentication service for Microsoft 365 login
 // This demonstrates how to integrate with Microsoft Graph API and your backend API
 
 import { PublicClientApplication, AccountInfo, AuthenticationResult } from '@azure/msal-browser';
-import ApiService, { type LoginRequest } from './apiService';
-import JWTUtils from '../utils/jwtUtils';
-import { type User } from '../types/user';
-
-interface LoginCredentials {
-  username: string;
-  password: string; // Should be base64 encoded when using real API
-}
-
 
 interface MicrosoftUser {
   id: string;
@@ -279,102 +270,4 @@ export class MicrosoftAuthService {
   }
 }
 
-export class AuthService {
-  /**
-   * Authenticate user with username and password
-   */
-  static async login(credentials: LoginCredentials): Promise<{ user: User; token: string; expiresIn: number }> {
-    try {
-      const response = await ApiService.login(credentials as LoginRequest);
-
-      if (!response.success || !response.token) {
-        console.error('Login failed:', response.message || response.error);
-        throw new Error(response.message || response.error || 'Invalid username or password');
-      }
-
-      // Debug
-      console.log("JWT Token:", response.token);
-
-      const userFromToken = JWTUtils.getUserFromToken(response.token);
-
-      console.log("Decoded User:", userFromToken);
-
-      if (!userFromToken) {
-        throw new Error('Invalid token received from server');
-      }
-
-      // Convert API user format to our User interface
-      const user: User = {
-        id: userFromToken.id,
-        name: userFromToken.name,
-        email: userFromToken.email,
-        title: userFromToken.title,
-        designation: userFromToken.designation || undefined,
-        department: userFromToken.department || undefined,
-        employeeId: userFromToken.employee_id || undefined,
-        hasTeam: userFromToken.has_team || false,
-        isHR: userFromToken.is_hr || false,
-        isCDO: userFromToken.is_cdo || false,
-        role: userFromToken.role || userFromToken.role_id || 'user',
-        view: userFromToken.view,
-        edit: userFromToken.edit,
-        settings: userFromToken.settings,
-        authMethod: 'manual'
-      };
-
-      return {
-        user,
-        token: response.token,
-        expiresIn: response.expires_in || 10 * 365 * 24 * 60 * 60 // Matches the backend's long-lived token; the 1-hour inactivity timeout is what actually ends a session
-      };
-    } catch (error) {
-      if (error instanceof Error) {
-        throw error;
-      }
-      // ApiService.makeRequest throws a plain ApiError object (not instanceof Error) on HTTP errors
-      if (error && typeof error === 'object') {
-        const e = error as { message?: string; data?: { error?: unknown; message?: unknown } };
-        const str = (v: unknown): string => {
-          if (v == null) return '';
-          const s = typeof v === 'string' ? v : String(v);
-          return s.trim();
-        };
-        const data = e.data;
-        const fromApi =
-          str(data?.error) || str(data?.message) || str(e.message);
-        if (fromApi) {
-          throw new Error(fromApi);
-        }
-      }
-      throw new Error('Network error occurred during authentication');
-    }
-  }
-
-  /**
-   * Get user profile information from JWT token
-   */
-  static async getProfile(token: string): Promise<User> {
-    try {
-      const userFromToken = JWTUtils.getUserFromToken(token);
-      if (!userFromToken) {
-        throw new Error('Invalid token or unable to decode user information');
-      }
-
-      return {
-        id: userFromToken.id,
-        name: userFromToken.name,
-        email: userFromToken.email,
-        title: userFromToken.title,
-        role: userFromToken.role || userFromToken.role_id || 'user',
-        view: userFromToken.view,
-        edit: userFromToken.edit,
-        settings: userFromToken.settings,
-        authMethod: 'manual'
-      };
-    } catch (error) {
-      throw new Error('Failed to load user profile');
-    }
-  }
-}
-
-export default AuthService;
+export default MicrosoftAuthService;

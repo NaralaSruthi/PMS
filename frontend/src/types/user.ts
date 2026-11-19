@@ -60,7 +60,6 @@ export interface AuthState {
 export interface AuthContextType {
   authState: AuthState;
   login: () => Promise<void>;
-  manualLogin: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   initAuth: () => Promise<void>;
 }

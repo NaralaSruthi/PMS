@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useLayoutEffect, useState, useCallback, useRef, ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
-import { MicrosoftAuthService, AuthService } from '../services/authService';
+import { MicrosoftAuthService } from '../services/authService';
 import ApiService from '../services/apiService';
 import JWTUtils from '../utils/jwtUtils';
 import {
@@ -14,7 +14,7 @@ import { type User, type AuthState, type AuthContextType } from '../types/user';
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 // Builds the app's User from the backend token's claims. Every sign-in path
-// (password, Microsoft, page-reload restore) goes through here so they all
+// (Microsoft, page-reload restore) goes through here so they all
 // carry the same role flags. auth_method is stamped by the backend; tokens
 // issued before it existed have none and are treated as manual.
 const userFromClaims = (flatClaims: any): User => ({
@@ -538,69 +538,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  const manualLogin = async (username: string, password: string) => {
-    try {
-      let user: User;
-      let token: string;
-
-      // Encode password to base64 before sending to the backend
-      const encodedPassword = btoa(password);
-
-      try {
-        const response = await AuthService.login({ username, password: encodedPassword });
-
-        // Transform backend response to match frontend expectations
-        user = {
-          id: response.user.id,
-          name: response.user.name,
-          email: response.user.email,
-          title: response.user.title || 'User',
-          designation: (response.user as any).designation || undefined,
-          department: (response.user as any).department || undefined,
-          employeeId: (response.user as any).employeeId || undefined,
-          hasTeam: (response.user as any).hasTeam || false,
-          isHR: (response.user as any).isHR || false,
-          isCDO: (response.user as any).isCDO || false,
-          role: (response.user as any).role || 'user', // Use mapped role name from backend
-          view: response.user.view || true, // Permissions are inside user object
-          edit: response.user.edit || true,
-          settings: response.user.settings || true,
-          authMethod: 'manual'
-        };
-        token = response.token;
-      } catch (apiError) {
-        throw apiError;
-      }
-
-      // Sanity-check the token from the backend
-      const isTokenValid = JWTUtils.isTokenStructurallyValid(token);
-      if (!isTokenValid) {
-        console.error('🔐 Token invalid or expired - unexpected response from backend');
-        throw new Error('Invalid token received from backend');
-      }
-
-      // Store authentication data in sessionStorage (clears when tab closes)
-      // Also store in localStorage as backup, but prefer sessionStorage
-      sessionStorage.setItem('authToken', token);
-      localStorage.setItem('authToken', token);
-      sessionStorage.setItem('manualAuthUser', JSON.stringify(user));
-      localStorage.setItem('manualAuthUser', JSON.stringify(user));
-      sessionStorage.setItem('lastActivity', Date.now().toString());
-      localStorage.setItem('lastActivity', Date.now().toString());
-
-      // Update auth state
-      setAuthState({
-        isAuthenticated: true,
-        isLoading: false,
-        user: user
-      });
-    } catch (error: any) {
-      throw error;
-    }
-  };
-
   return (
-    <AuthContext.Provider value={{ authState, login, manualLogin, logout, initAuth }}>
+    <AuthContext.Provider value={{ authState, login, logout, initAuth }}>
       {children}
     </AuthContext.Provider>
   );

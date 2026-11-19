@@ -1,29 +1,14 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Card, Button, Typography, notification, Tabs, Form, Input, InputRef } from 'antd';
-import { SafetyOutlined, UserOutlined, LockOutlined } from '@ant-design/icons';
+import React, { useState } from 'react';
+import { Card, Button, Typography, notification } from 'antd';
+import { SafetyOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
-import Swal from 'sweetalert2';
 import './Login.css';
 
 const { Title, Text } = Typography;
 
-interface LoginFormData {
-  username: string;
-  password: string;
-}
-
-// Username/password login is for local testing only: the Manual Login tab
-// shows only when REACT_APP_ENABLE_MANUAL_LOGIN=true is set in frontend/.env
-// at build/start time (the backend's /login also needs ENABLE_MANUAL_LOGIN).
-// Without it, the page is the Microsoft 365 sign-in alone.
-const MANUAL_LOGIN_ENABLED = process.env.REACT_APP_ENABLE_MANUAL_LOGIN === 'true';
-
 const Login: React.FC = () => {
-  const { login: microsoftLogin, manualLogin } = useAuth();
+  const { login: microsoftLogin } = useAuth();
   const [microsoftLoading, setMicrosoftLoading] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [form] = Form.useForm();
-  const passwordRef = useRef<InputRef>(null);
 
   const handleMicrosoftLogin = async () => {
     setMicrosoftLoading(true);
@@ -41,150 +26,6 @@ const Login: React.FC = () => {
       setMicrosoftLoading(false);
     }
   };
-
-  const handleManualLogin = async (values: LoginFormData) => {
-    setLoading(true);
-    try {
-      await manualLogin(values.username, values.password);
-      await Swal.fire({
-        icon: 'success',
-        title: 'Login Successful',
-        text: 'Welcome back!',
-        timer: 1500,
-        showConfirmButton: false,
-      });
-      setTimeout(() => {
-        window.location.href = '/dashboard';
-      }, 100);
-    } catch (error: any) {
-      await Swal.fire({
-        icon: 'error',
-        title: 'Login Failed',
-        text: error.message || 'Invalid username or password. Please try again.',
-      });
-      setLoading(false);
-    }
-  };
-
-  // Handle password autofill UI
-  useEffect(() => {
-    const checkPasswordAutofill = () => {
-      if (passwordRef.current?.input) {
-        const inputElement = passwordRef.current.input;
-        const isAutofilled = window.getComputedStyle(inputElement, null).getPropertyValue('background-color') !== 'rgba(0, 0, 0, 0)' &&
-          window.getComputedStyle(inputElement, null).getPropertyValue('background-color') !== 'transparent';
-        
-        if (isAutofilled) {
-          inputElement.style.backgroundColor = '#100D24';
-        }
-      }
-    };
-
-    // Check immediately
-    checkPasswordAutofill();
-
-    // Check after a short delay to catch autofill
-    const timeout = setTimeout(checkPasswordAutofill, 100);
-    return () => clearTimeout(timeout);
-  }, []);
-
-  const microsoftPanel = (
-    <div style={{ padding: '10px 0' }}>
-      <div style={{ textAlign: 'center', marginBottom: '20px' }}>
-        <div style={{
-          width: '80px',
-          height: '80px',
-          borderRadius: '20px',
-          background: 'var(--hero-gradient)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          margin: '0 auto 15px',
-          boxShadow: 'var(--primary-shadow-hover)'
-        }}>
-          <SafetyOutlined style={{ fontSize: '32px', color: '#fff' }} />
-        </div>
-        <Title level={3} style={{ color: '#F4F1F8', marginBottom: '5px', fontWeight: '600' }}>
-          Microsoft 365
-        </Title>
-        <Text type="secondary" style={{ fontSize: '14px', color: '#C5C0D6' }}>
-          Sign in with your Microsoft account
-        </Text>
-      </div>
-
-      <Button
-        className="microsoft-login-btn"
-        onClick={handleMicrosoftLogin}
-        loading={microsoftLoading}
-        block
-        size="large"
-        type="primary"
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <SafetyOutlined style={{ marginRight: '8px', fontSize: '18px' }} />
-        Continue with Microsoft 365
-      </Button>
-
-      <div style={{ textAlign: 'center', marginTop: '15px' }}>
-        <Text type="secondary" style={{ fontSize: '12px' }}>
-          You'll be redirected to your organization's login page
-        </Text>
-      </div>
-    </div>
-  );
-
-  const manualLoginForm = (
-    <Form
-      form={form}
-      onFinish={handleManualLogin}
-      layout="vertical"
-      style={{ padding: '10px 0' }}
-    >
-      <Form.Item
-        name="username"
-        rules={[{ required: true, message: 'Please enter your username' }]}
-      >
-        <Input
-          prefix={<UserOutlined />}
-          placeholder="Username"
-          size="large"
-          style={{ height: '45px', borderRadius: '8px' }}
-        />
-      </Form.Item>
-      <Form.Item
-        name="password"
-        rules={[{ required: true, message: 'Please enter your password' }]}
-      >
-        <Input.Password
-          ref={passwordRef}
-          prefix={<LockOutlined />}
-          placeholder="Password"
-          size="large"
-          style={{ height: '45px', borderRadius: '8px' }}
-        />
-      </Form.Item>
-      <Form.Item>
-        <Button
-          type="primary"
-          htmlType="submit"
-          loading={loading}
-          block
-          size="large"
-          style={{
-            height: '45px',
-            borderRadius: '8px',
-            fontWeight: '600',
-          }}
-        >
-          Sign In
-        </Button>
-      </Form.Item>
-    </Form>
-  );
 
   return (
     <>
@@ -278,17 +119,52 @@ const Login: React.FC = () => {
         </div>
 
         <div style={{ padding: '0 40px 20px' }}>
-          {MANUAL_LOGIN_ENABLED ? (
-            <Tabs
-              defaultActiveKey="microsoft"
-              items={[
-                { key: 'microsoft', label: 'Microsoft 365', children: microsoftPanel },
-                { key: 'manual', label: 'Manual Login', children: manualLoginForm },
-              ]}
-            />
-          ) : (
-            microsoftPanel
-          )}
+          <div style={{ padding: '10px 0' }}>
+            <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+              <div style={{
+                width: '80px',
+                height: '80px',
+                borderRadius: '20px',
+                background: 'var(--hero-gradient)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                margin: '0 auto 15px',
+                boxShadow: 'var(--primary-shadow-hover)'
+              }}>
+                <SafetyOutlined style={{ fontSize: '32px', color: '#fff' }} />
+              </div>
+              <Title level={3} style={{ color: '#F4F1F8', marginBottom: '5px', fontWeight: '600' }}>
+                Microsoft 365
+              </Title>
+              <Text type="secondary" style={{ fontSize: '14px', color: '#C5C0D6' }}>
+                Sign in with your Microsoft account
+              </Text>
+            </div>
+
+            <Button
+              className="microsoft-login-btn"
+              onClick={handleMicrosoftLogin}
+              loading={microsoftLoading}
+              block
+              size="large"
+              type="primary"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <SafetyOutlined style={{ marginRight: '8px', fontSize: '18px' }} />
+              Continue with Microsoft 365
+            </Button>
+
+            <div style={{ textAlign: 'center', marginTop: '15px' }}>
+              <Text type="secondary" style={{ fontSize: '12px' }}>
+                You'll be redirected to your organization's login page
+              </Text>
+            </div>
+          </div>
         </div>
 
         <div style={{

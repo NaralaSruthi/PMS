@@ -15,11 +15,6 @@ const DEFAULT_500_MESSAGE =
   'A temporary connection issue occurred while fetching data. Please try again.';
 const AUTO_RETRY_500_DELAY_MS = 300;
 
-interface LoginRequest {
-  username: string;
-  password: string; // Should be base64 encoded when using real API
-}
-
 interface LoginResponse {
   success: boolean;
   message: string;
@@ -469,18 +464,6 @@ class ApiService {
   }
 
   // Authentication endpoints
-  static async login(credentials: LoginRequest): Promise<LoginResponse> {
-    try {
-      const response = await this.makeRequest<LoginResponse>('/login', {
-        method: 'POST',
-        body: JSON.stringify(credentials),
-      }, true); // Public endpoint - no token exists yet at login time
-      return response;
-    } catch (error) {
-      throw error;
-    }
-  }
-
   // Microsoft 365 login - exchange the MSAL ID token for a backend JWT token.
   // The backend verifies the ID token's signature with Microsoft and reads the
   // email from it, so the browser never gets to assert who the user is.
@@ -713,4 +696,3 @@ class ApiService {
 }
 
 export default ApiService;
-export { type LoginRequest };
