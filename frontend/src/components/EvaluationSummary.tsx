@@ -24,8 +24,9 @@ export interface EvaluationSummaryProps {
   summary: RatingSummary | null;
 }
 
-// Points as stored (up to 2 decimals), without trailing zeros: 61.25, 7.5, 85.
-export const formatPoints = (points: number) => String(Math.round(points * 100) / 100);
+// Points rounded to one decimal, whole numbers left as-is: 61.25 → 61.3,
+// 7.5 → 7.5, 85 → 85. Display only — stored values keep 2-decimal precision.
+export const formatPoints = (points: number) => String(Math.round(points * 10) / 10);
 
 // Manager Evaluation tab's sidebar (see ManagerEmployeeReview.tsx): a compact
 // donut of the live rating-question answers, with the rating quality score

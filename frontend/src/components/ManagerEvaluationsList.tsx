@@ -11,6 +11,8 @@ import { formatPoints } from './EvaluationSummary';
 import '../styles/managerDashboard.css';
 import '../styles/pageLayout.css';
 import '../styles/teamTable.css';
+// Same compact dashboard look as the HR Review page (see .hr-dashboard there).
+import '../styles/hrDashboard.css';
 
 const { Title, Text } = Typography;
 
@@ -144,8 +146,8 @@ const ManagerEvaluationsList: React.FC = () => {
         <div className="employee-cell">
           <Avatar className="employee-avatar">{getInitials(record.name)}</Avatar>
           <div className="employee-info">
-            <div className="employee-name" title={record.name}>{record.name}</div>
-            <div className="employee-email" title={record.email}>{record.email}</div>
+            {/* Name only — the email still shows on hover, same as the HR Review table. */}
+            <div className="employee-name" title={record.email}>{record.name}</div>
           </div>
         </div>
       ),
@@ -235,38 +237,40 @@ const ManagerEvaluationsList: React.FC = () => {
   ];
 
   return (
-    <div className="app-page-container">
-      <div
-        className="app-page-header"
-        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}
-      >
-        <Title level={3} className="app-page-title" style={{ marginBottom: 0 }}>Manager Review</Title>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <Text strong>Review Period:</Text>
-          {/* "All Periods" is a real option (ALL_OPTION), shown when no
-              period is selected — the filter itself still uses undefined. */}
-          <Select
-            allowClear={selectedReviewPeriod !== undefined}
-            style={{ minWidth: 240 }}
-            value={selectedReviewPeriod ?? ALL_OPTION}
-            onChange={(value) => setSelectedReviewPeriod(value === ALL_OPTION ? undefined : value)}
-            options={[
-              { value: ALL_OPTION, label: 'All Periods' },
-              ...reviewPeriods.map((period) => ({
-                value: period,
-                label: period === currentReviewPeriod
-                  ? `${formatReviewPeriod(period)} (current)`
-                  : formatReviewPeriod(period),
-              })),
-            ]}
-          />
+    // hr-dashboard: same compact spacing, card and table sizes as the HR
+    // Review page (hrDashboard.css).
+    <div className="app-page-container hr-dashboard">
+      <div className="app-page-header hr-dashboard__toolbar">
+        <Title level={3} className="app-page-title">Manager Review</Title>
+        <div className="hr-dashboard__filters">
+          <div>
+            <Text strong>Review Period:</Text>
+            {/* "All Periods" is a real option (ALL_OPTION), shown when no
+                period is selected — the filter itself still uses undefined. */}
+            <Select
+              allowClear={selectedReviewPeriod !== undefined}
+              style={{ minWidth: 240 }}
+              value={selectedReviewPeriod ?? ALL_OPTION}
+              onChange={(value) => setSelectedReviewPeriod(value === ALL_OPTION ? undefined : value)}
+              options={[
+                { value: ALL_OPTION, label: 'All Periods' },
+                ...reviewPeriods.map((period) => ({
+                  value: period,
+                  label: period === currentReviewPeriod
+                    ? `${formatReviewPeriod(period)} (current)`
+                    : formatReviewPeriod(period),
+                })),
+              ]}
+            />
+          </div>
         </div>
       </div>
 
       <Row
-        gutter={[{ xs: 16, sm: 20, lg: 24 }, { xs: 16, sm: 20, lg: 24 }]}
+        className="hr-dashboard__cards"
+        gutter={[{ xs: 12, sm: 16 }, { xs: 12, sm: 16 }]}
         align="stretch"
-        style={{ marginBottom: 24 }}
+        style={{ marginBottom: 16 }}
       >
         <Col xs={24} sm={12} lg={8}>
           <SummaryStatCard

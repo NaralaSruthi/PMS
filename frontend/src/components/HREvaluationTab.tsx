@@ -67,6 +67,10 @@ export interface HREvaluationTabProps {
   // (rating chart and points) so the answers use the full width. HR, CDO and
   // manager views leave this off and keep their scores.
   hideScores?: boolean;
+  // Shown as "Submitted by" next to "Submitted on". No HR person is recorded
+  // on the submission, so the caller passes a role label (the employee's My
+  // Reviews page passes "HR"); omitted elsewhere.
+  submittedByLabel?: string;
 }
 
 // Employee Review Details page's "HR Evaluation" tab. Unlike
@@ -77,7 +81,14 @@ export interface HREvaluationTabProps {
 // template. Backend enforces that (is_hr + a specific employee_id, plus the
 // same availability gate) in submit_form — this component doesn't just trust
 // a client-side check.
-const HREvaluationTab: React.FC<HREvaluationTabProps> = ({ employeeId, available, onSubmitted, reviewPeriodId, hideScores }) => {
+const HREvaluationTab: React.FC<HREvaluationTabProps> = ({
+  employeeId,
+  available,
+  onSubmitted,
+  reviewPeriodId,
+  hideScores,
+  submittedByLabel,
+}) => {
   const { authState } = useAuth();
   const isHR = authState.user?.isHR || false;
   // CDO shares HR's is_hr flag (see HR_DESIGNATIONS in main.py) so they can
@@ -285,14 +296,25 @@ const HREvaluationTab: React.FC<HREvaluationTabProps> = ({ employeeId, available
           {submittedAt && (
             <div
               style={{
+                display: 'flex',
+                gap: 32,
+                flexWrap: 'wrap',
                 marginTop: 16,
                 marginBottom: 28,
                 paddingBottom: 24,
                 borderBottom: '1px solid var(--color-border, rgba(255,255,255,0.12))',
               }}
             >
-              <div className="hr-employee-info-label">Submitted on</div>
-              <div className="hr-employee-info-value">{new Date(submittedAt).toLocaleDateString()}</div>
+              {submittedByLabel && (
+                <div>
+                  <div className="hr-employee-info-label">Submitted by</div>
+                  <div className="hr-employee-info-value">{submittedByLabel}</div>
+                </div>
+              )}
+              <div>
+                <div className="hr-employee-info-label">Submitted on</div>
+                <div className="hr-employee-info-value">{new Date(submittedAt).toLocaleDateString()}</div>
+              </div>
             </div>
           )}
           <ManagerEvaluationAnswers sections={readOnlySections} answers={submittedAnswers} />

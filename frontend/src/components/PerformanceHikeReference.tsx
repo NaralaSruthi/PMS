@@ -1,6 +1,6 @@
 import React from 'react';
 import { Typography } from 'antd';
-import { HIKE_BRACKETS, hikeBracketIndex } from '../utils/hikeBrackets';
+import { HIKE_BRACKETS, getHikeBand } from '../utils/hikeBrackets';
 import '../styles/evaluationSummary.css';
 
 const { Text } = Typography;
@@ -20,16 +20,16 @@ export interface PerformanceHikeReferenceProps {
 
 const PerformanceHikeReference: React.FC<PerformanceHikeReferenceProps> = ({ scorePercentage }) => {
   const hasScore = typeof scorePercentage === 'number' && !Number.isNaN(scorePercentage);
-  const activeIndex = hasScore ? hikeBracketIndex(scorePercentage as number) : -1;
+  const activeBand = getHikeBand(scorePercentage);
 
   return (
     <div className="evaluation-summary-card hike-reference-card">
       <div className="hike-reference-card__header">
         <Text strong style={{ fontSize: 14, color: '#F4F1F8' }}>
-          Performance Score &amp; Hike
+          Performance Score &amp; Hike Reference
         </Text>
         <span className="hike-reference-card__current">
-          {hasScore ? `Current ${Math.round((scorePercentage as number) * 100) / 100}%` : 'No score yet'}
+          {hasScore ? `Current ${Math.round(scorePercentage as number)}%` : 'No score yet'}
         </span>
       </div>
 
@@ -41,8 +41,8 @@ const PerformanceHikeReference: React.FC<PerformanceHikeReferenceProps> = ({ sco
           </tr>
         </thead>
         <tbody>
-          {HIKE_BRACKETS.map((bracket, index) => {
-            const active = index === activeIndex;
+          {HIKE_BRACKETS.map((bracket) => {
+            const active = bracket.band === activeBand;
             return (
               <tr
                 key={bracket.label}
@@ -56,6 +56,10 @@ const PerformanceHikeReference: React.FC<PerformanceHikeReferenceProps> = ({ sco
           })}
         </tbody>
       </table>
+
+      <Text style={{ display: 'block', marginTop: 12, fontSize: 12, color: '#8B86A2' }}>
+        Note: Hike is based on the final overall score after all reviews are complete.
+      </Text>
     </div>
   );
 };

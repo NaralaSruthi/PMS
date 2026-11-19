@@ -281,7 +281,14 @@ const MyReviewDetails: React.FC = () => {
                   <StatusBadge status={managerSubmitted ? 'submitted' : 'not_started'} />
                 </span>
               ),
-              children: <HRManagerEvaluationTab submittedForPeriod={managerSubmitted} hideScores />,
+              children: (
+                <HRManagerEvaluationTab
+                  submittedForPeriod={managerSubmitted}
+                  submittedByName={managerName}
+                  hideScores
+                  hideHistory
+                />
+              ),
             },
             {
               key: 'hr',
@@ -291,7 +298,7 @@ const MyReviewDetails: React.FC = () => {
                   <StatusBadge status={hrSubmitted ? 'submitted' : hrEvaluationAvailable ? 'ready' : 'not_available'} />
                 </span>
               ),
-              children: <HREvaluationTab available={hrEvaluationAvailable} hideScores />,
+              children: <HREvaluationTab available={hrEvaluationAvailable} hideScores submittedByLabel="HR" />,
             },
           ]}
         />

@@ -1,17 +1,27 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Table, Typography, Avatar, Button, Select, Row, Col, Tag } from 'antd';
+import { Table, Typography, Avatar, Button, Select, Row, Col, Tooltip } from 'antd';
+import type { SortOrder } from 'antd/es/table/interface';
 import { IdcardOutlined, TeamOutlined, ProfileOutlined, StarOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import ApiService, { HRDashboardResponse, HREmployee, HRManager, ReviewPeriodOption } from '../services/apiService';
 import FormLoadingState from './FormLoadingState';
 import { getInitials, StatusBadge } from '../utils/teamStatusHelpers';
 import { formatReviewPeriod } from '../utils/reviewPeriodFormat';
 import { SummaryStatCard, ReviewStatusCard } from './ManagerDashboard';
-import HikeDistributionCard, { employeeHikeBracketIndex } from './HikeDistributionCard';
-import { HIKE_BRACKETS } from '../utils/hikeBrackets';
+import {
+  HikeBand,
+  HIKE_BAND_ORDER,
+  HIKE_BAND_DISPLAY,
+  getHikeBand,
+  employeeHikeBand,
+  groupByHikeBand,
+  overallScorePercentage,
+} from '../utils/hikeBrackets';
+import { useAuth } from '../contexts/AuthContext';
 import '../styles/pageLayout.css';
 import '../styles/teamTable.css';
 import '../styles/managerDashboard.css';
+import '../styles/hrDashboard.css';
 
 const { Title, Text } = Typography;
 
@@ -22,11 +32,14 @@ const ALL_OPTION = '__all__';
 interface EmptyHRStateProps {
   title?: string;
   description?: string;
+  // Optional button under the message (e.g. "Show all" for an empty band).
+  action?: React.ReactNode;
 }
 
 const EmptyHRState: React.FC<EmptyHRStateProps> = ({
   title = 'No employees found',
   description = 'There are no other employees in the system yet.',
+  action,
 }) => (
   <div className="team-empty-state">
     <div className="team-empty-icon">
@@ -34,11 +47,93 @@ const EmptyHRState: React.FC<EmptyHRStateProps> = ({
     </div>
     <div className="team-empty-title">{title}</div>
     <div className="team-empty-description">{description}</div>
+    {action && <div style={{ marginTop: 16 }}>{action}</div>}
+  </div>
+);
+
+const employeesLabel = (count: number) => `${count} ${count === 1 ? 'employee' : 'employees'}`;
+
+interface HikeDistributionBarProps {
+  // Employees per band for the current Period + Manager view.
+  counts: Record<HikeBand, number>;
+  total: number;
+  selectedBand: HikeBand | null;
+  onSelect: (band: HikeBand | null) => void;
+}
+
+// Clickable hike distribution: one bar split into a segment per band (width
+// ∝ employee count, empty bands hidden), a legend below, and the active
+// filter on the right. Clicking a segment filters the table to that band;
+// clicking it again (or Clear) shows everyone.
+const HikeDistributionBar: React.FC<HikeDistributionBarProps> = ({ counts, total, selectedBand, onSelect }) => (
+  <div className="hike-distribution">
+    <div className="hike-distribution__header">
+      <Text strong className="hike-distribution__title">
+        Hike distribution · {employeesLabel(total)}
+      </Text>
+      {selectedBand && (
+        <span className="hike-distribution__active">
+          Showing {HIKE_BAND_DISPLAY[selectedBand].name} ·{' '}
+          <Button type="link" size="small" className="hike-distribution__clear" onClick={() => onSelect(null)}>
+            Clear
+          </Button>
+        </span>
+      )}
+    </div>
+
+    <div className="hike-distribution__bar" role="group" aria-label="Filter employees by hike band">
+      {HIKE_BAND_ORDER.filter((band) => counts[band] > 0).map((band) => {
+        const display = HIKE_BAND_DISPLAY[band];
+        const count = counts[band];
+        const selected = selectedBand === band;
+        const faded = selectedBand !== null && !selected;
+        const description = `${display.name}: ${employeesLabel(count)}, ${display.range}`;
+        return (
+          <Tooltip key={band} title={description}>
+            <button
+              type="button"
+              className={`hike-distribution__segment${selected ? ' hike-distribution__segment--selected' : ''}${
+                faded ? ' hike-distribution__segment--faded' : ''
+              }`}
+              style={{ flexGrow: count, backgroundColor: display.color, color: display.textColor }}
+              aria-pressed={selected}
+              aria-label={`${description}. ${selected ? 'Click to show all employees' : 'Click to filter the table'}`}
+              onClick={() => onSelect(selected ? null : band)}
+            >
+              {count}
+            </button>
+          </Tooltip>
+        );
+      })}
+    </div>
+
+    {/* Band name under each segment — same flex sizing as the bar so every
+        label sits directly below its colour. Decorative: each segment's
+        aria-label already names its band. */}
+    <div className="hike-distribution__labels" aria-hidden="true">
+      {HIKE_BAND_ORDER.filter((band) => counts[band] > 0).map((band) => (
+        <span
+          key={band}
+          className={`hike-distribution__label${
+            selectedBand !== null && selectedBand !== band ? ' hike-distribution__label--faded' : ''
+          }`}
+          style={{ flexGrow: counts[band] }}
+          title={HIKE_BAND_DISPLAY[band].name}
+        >
+          {/* Just the hike %: "20%", "10%" … or "Not scored". */}
+          {band === 'not_scored' ? HIKE_BAND_DISPLAY[band].name : `${band}%`}
+        </span>
+      ))}
+    </div>
   </div>
 );
 
 const HRDashboard: React.FC = () => {
   const navigate = useNavigate();
+  // Same page for HR and the CDO; the title follows the sidebar label
+  // (Sidebar.tsx): "Overall Review" for the CDO, "HR Review" otherwise.
+  const { authState } = useAuth();
+  const pageTitle = authState.user?.isCDO ? 'Overall Review' : 'HR Review';
   const [employees, setEmployees] = useState<HREmployee[]>([]);
   const [managers, setManagers] = useState<HRManager[]>([]);
   // Kept alongside the individual fields above so "View Details" below can
@@ -87,8 +182,8 @@ const HRDashboard: React.FC = () => {
   // Switching period reloads the roster for that period (via the URL change
   // above) rather than filtering the current one client-side.
   const handleReviewPeriodChange = (value: string) => {
-    // A different period means different scores, so drop any hike filter.
-    setSelectedHikeIndex(undefined);
+    // A different period means different scores, so drop any band filter.
+    applyBand(null);
     setSearchParams(value === dashboardResponse?.current_review_period_id ? {} : { review_period_id: value });
   };
 
@@ -103,17 +198,29 @@ const HRDashboard: React.FC = () => {
     [employees, selectedManagerId]
   );
 
-  // Hike bracket picked on the Performance & Hike card (index into
-  // HIKE_BRACKETS) — narrows only the table below; the summary cards keep
-  // counting the whole manager-filtered roster so their numbers don't shift
-  // as HR clicks between brackets.
-  const [selectedHikeIndex, setSelectedHikeIndex] = useState<number | undefined>(undefined);
+  // Hike band picked on the distribution bar; null = show everyone. Filtered
+  // client-side over the full roster for the period (GET /api/hr/employees
+  // returns every employee; the table pages in the browser), on top of the
+  // Manager filter. Narrows only the table: the summary cards and the bar's
+  // counts keep counting the whole manager-filtered roster so they don't
+  // shift as the band changes.
+  const [selectedBand, setSelectedBand] = useState<HikeBand | null>(null);
+  // Controlled so any filter change can send the table back to page 1.
+  const [currentPage, setCurrentPage] = useState(1);
+  const applyBand = (band: HikeBand | null) => {
+    setSelectedBand(band);
+    setCurrentPage(1);
+  };
+  const bandCounts = useMemo(() => {
+    const groups = groupByHikeBand(filteredEmployees);
+    return Object.fromEntries(HIKE_BAND_ORDER.map((band) => [band, groups[band].length])) as Record<HikeBand, number>;
+  }, [filteredEmployees]);
   const tableEmployees = useMemo(
     () =>
-      selectedHikeIndex === undefined
+      selectedBand === null
         ? filteredEmployees
-        : filteredEmployees.filter((employee) => employeeHikeBracketIndex(employee) === selectedHikeIndex),
-    [filteredEmployees, selectedHikeIndex]
+        : filteredEmployees.filter((employee) => employeeHikeBand(employee) === selectedBand),
+    [filteredEmployees, selectedBand]
   );
 
   // The roster is fetched for exactly the selected period (see
@@ -149,8 +256,8 @@ const HRDashboard: React.FC = () => {
         <div className="employee-cell">
           <Avatar className="employee-avatar">{getInitials(record.name)}</Avatar>
           <div className="employee-info">
-            <div className="employee-name" title={record.name}>{record.name}</div>
-            <div className="employee-email" title={record.email}>{record.email}</div>
+            {/* Name only — the email still shows on hover. */}
+            <div className="employee-name" title={record.email}>{record.name}</div>
           </div>
         </div>
       ),
@@ -198,8 +305,46 @@ const HRDashboard: React.FC = () => {
       ),
     },
     {
+      // Overall Score % in a pill coloured by its hike band (getHikeBand) —
+      // the same colour as that band's segment on the distribution bar; the
+      // hike itself is in the tooltip. A grey "Not scored" pill until both
+      // Manager and HR reviews are scored.
+      title: 'Rating',
+      key: 'hike_rating',
+      // Fixed width: the table is table-layout: fixed (scroll.y), so without
+      // one this short column would get an equal share of the width. Room
+      // for "Not scored" and the header's sort icon.
+      width: 130,
+      // By score; Not scored always at the bottom in either direction (antd
+      // reverses the result for descending, so flip it back for those rows).
+      sorter: (a: HREmployee, b: HREmployee, sortOrder?: SortOrder) => {
+        const scoreA = overallScorePercentage(a);
+        const scoreB = overallScorePercentage(b);
+        if (scoreA === undefined || scoreB === undefined) {
+          if (scoreA === scoreB) return 0;
+          const unscoredLast = scoreA === undefined ? 1 : -1;
+          return sortOrder === 'descend' ? -unscoredLast : unscoredLast;
+        }
+        return scoreA - scoreB;
+      },
+      render: (_: unknown, record: HREmployee) => {
+        const score = overallScorePercentage(record);
+        const band = getHikeBand(score);
+        const display = HIKE_BAND_DISPLAY[band];
+        const pill = (text: string) => (
+          <span className="hike-rating-chip" style={{ backgroundColor: display.color, color: display.textColor }}>
+            {text}
+          </span>
+        );
+        if (score === undefined) return pill('Not scored');
+        // Whole number, or one decimal when there is one (71.1%).
+        return <Tooltip title={`${display.name} (${display.range})`}>{pill(`${Math.round(score * 10) / 10}%`)}</Tooltip>;
+      },
+    },
+    {
       title: 'Action',
       key: 'action',
+      width: 140,
       render: (_: unknown, record: HREmployee) => {
         if (!record.employee_id) {
           return '—';
@@ -231,47 +376,57 @@ const HRDashboard: React.FC = () => {
   ];
 
   return (
-    <div className="app-page-container">
-      {/* Tighter than the shared 24px header margin — 8px here plus the
-          title's own 8px leaves 16px above the filter row. */}
-      <div className="app-page-header" style={{ marginBottom: 8 }}>
-        <Title level={3} className="app-page-title">HR Review</Title>
+    // hr-dashboard scopes the compact spacing in hrDashboard.css to this page
+    // only (the card/table classes are shared with the Manager Dashboard).
+    <div className="app-page-container hr-dashboard">
+      {/* Title and filters share one line (wrapping on narrow screens) so the
+          employee table below gets the vertical space. */}
+      <div className="app-page-header hr-dashboard__toolbar">
+        <Title level={3} className="app-page-title">{pageTitle}</Title>
+
+        <div className="hr-dashboard__filters">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Text strong>Review Period:</Text>
+            <Select
+              style={{ minWidth: 240 }}
+              value={dashboardResponse?.review_period_id}
+              onChange={handleReviewPeriodChange}
+              options={reviewPeriodOptions.map((option) => ({
+                value: option.review_period_id,
+                label: option.is_current
+                  ? `${formatReviewPeriod(option.label)} (current)`
+                  : formatReviewPeriod(option.label),
+              }))}
+            />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Text strong>Reporting Manager:</Text>
+            {/* "All Managers" is a real option (ALL_OPTION), shown when no
+                manager is selected — the filter itself still uses undefined. */}
+            <Select
+              allowClear={selectedManagerId !== undefined}
+              style={{ minWidth: 240 }}
+              value={selectedManagerId ?? ALL_OPTION}
+              onChange={(value) => {
+                setSelectedManagerId(value === ALL_OPTION ? undefined : value);
+                setCurrentPage(1);
+              }}
+              options={[
+                { value: ALL_OPTION, label: 'All Managers' },
+                ...managers.map((manager) => ({ value: manager.employee_id, label: manager.name })),
+              ]}
+            />
+          </div>
+        </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 24, marginBottom: 20, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <Text strong>Review Period:</Text>
-          <Select
-            style={{ minWidth: 240 }}
-            value={dashboardResponse?.review_period_id}
-            onChange={handleReviewPeriodChange}
-            options={reviewPeriodOptions.map((option) => ({
-              value: option.review_period_id,
-              label: option.is_current
-                ? `${formatReviewPeriod(option.label)} (current)`
-                : formatReviewPeriod(option.label),
-            }))}
-          />
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <Text strong>Reporting Manager:</Text>
-          {/* "All Managers" is a real option (ALL_OPTION), shown when no
-              manager is selected — the filter itself still uses undefined. */}
-          <Select
-            allowClear={selectedManagerId !== undefined}
-            style={{ minWidth: 240 }}
-            value={selectedManagerId ?? ALL_OPTION}
-            onChange={(value) => setSelectedManagerId(value === ALL_OPTION ? undefined : value)}
-            options={[
-              { value: ALL_OPTION, label: 'All Managers' },
-              ...managers.map((manager) => ({ value: manager.employee_id, label: manager.name })),
-            ]}
-          />
-        </div>
-      </div>
-
-      <Row gutter={[{ xs: 16, sm: 20, lg: 24 }, { xs: 16, sm: 20, lg: 24 }]} align="stretch" style={{ marginBottom: 24 }}>
-        <Col xs={24} sm={12} lg={8} xl={{ flex: '20%' }}>
+      <Row
+        className="hr-dashboard__cards"
+        gutter={[{ xs: 12, sm: 16 }, { xs: 12, sm: 16 }]}
+        align="stretch"
+        style={{ marginBottom: 16 }}
+      >
+        <Col xs={24} sm={12} lg={6}>
           <SummaryStatCard
             icon={<TeamOutlined />}
             value={totalCount}
@@ -280,7 +435,7 @@ const HRDashboard: React.FC = () => {
             iconBackground="#3B82F6"
           />
         </Col>
-        <Col xs={24} sm={12} lg={8} xl={{ flex: '20%' }}>
+        <Col xs={24} sm={12} lg={6}>
           <ReviewStatusCard
             icon={<ProfileOutlined />}
             title="Self Reviews"
@@ -291,7 +446,7 @@ const HRDashboard: React.FC = () => {
             pendingCount={selfAssessmentPendingCount}
           />
         </Col>
-        <Col xs={24} sm={12} lg={8} xl={{ flex: '20%' }}>
+        <Col xs={24} sm={12} lg={6}>
           <ReviewStatusCard
             icon={<StarOutlined />}
             title="Manager Reviews"
@@ -304,7 +459,7 @@ const HRDashboard: React.FC = () => {
             pendingLabel="Not Completed"
           />
         </Col>
-        <Col xs={24} sm={12} lg={8} xl={{ flex: '20%' }}>
+        <Col xs={24} sm={12} lg={6}>
           <ReviewStatusCard
             icon={<SafetyCertificateOutlined />}
             title="HR Reviews"
@@ -317,34 +472,10 @@ const HRDashboard: React.FC = () => {
             pendingLabel="Not Completed"
           />
         </Col>
-        <Col xs={24} sm={12} lg={8} xl={{ flex: '20%' }}>
-          <HikeDistributionCard
-            employees={filteredEmployees}
-            selectedIndex={selectedHikeIndex}
-            onSelect={setSelectedHikeIndex}
-          />
-        </Col>
       </Row>
 
-      {selectedHikeIndex !== undefined && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
-          <Text strong>Hike:</Text>
-          <Tag closable color="purple" onClose={() => setSelectedHikeIndex(undefined)} style={{ marginInlineEnd: 0 }}>
-            {HIKE_BRACKETS[selectedHikeIndex].hike} hike ({HIKE_BRACKETS[selectedHikeIndex].label})
-          </Tag>
-          <Text type="secondary" style={{ fontSize: 13 }}>
-            {tableEmployees.length} of {filteredEmployees.length} employees
-          </Text>
-        </div>
-      )}
-
       <div className="app-content-card">
-        {filteredEmployees.length > 0 && tableEmployees.length === 0 ? (
-          <EmptyHRState
-            title="No employees in this hike bracket"
-            description="No employee's Overall Score falls in this range. Clear the hike filter to see everyone."
-          />
-        ) : filteredEmployees.length === 0 ? (
+        {filteredEmployees.length === 0 ? (
           selectedManagerId ? (
             <EmptyHRState
               title="No reports for this manager"
@@ -354,6 +485,13 @@ const HRDashboard: React.FC = () => {
             <EmptyHRState />
           )
         ) : (
+          <>
+          <HikeDistributionBar
+            counts={bandCounts}
+            total={filteredEmployees.length}
+            selectedBand={selectedBand}
+            onSelect={applyBand}
+          />
           <Table
             className="team-table scrollable-team-table"
             columns={columns}
@@ -365,9 +503,27 @@ const HRDashboard: React.FC = () => {
             scroll={{ y: 240 }}
             pagination={{
               pageSize: 10,
+              current: currentPage,
+              onChange: setCurrentPage,
               showTotal: (total, range) => `Showing ${range[0]}–${range[1]} of ${total} employees`,
             }}
+            locale={{
+              // Only reachable when a selected band has no one left after a
+              // Manager change (empty bands have no segment to click).
+              emptyText: (
+                <EmptyHRState
+                  title="No employees in the selected hike band"
+                  description="No employee in this view has an Overall Score in this band."
+                  action={
+                    <Button type="primary" onClick={() => applyBand(null)}>
+                      Show all
+                    </Button>
+                  }
+                />
+              ),
+            }}
           />
+          </>
         )}
       </div>
     </div>

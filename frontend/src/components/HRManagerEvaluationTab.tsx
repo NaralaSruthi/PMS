@@ -50,6 +50,12 @@ export interface HRManagerEvaluationTabProps {
   // (rating chart and points) so the answers use the full width. HR, CDO and
   // manager views leave this off and keep their scores.
   hideScores?: boolean;
+  // Employee's own My Reviews page only (shown after the Overall Review is
+  // approved): hides the Review History (submit / reject / resubmit trail)
+  // and the approval details (Approved/Rejected badge and "Approved by" row),
+  // leaving just Submitted by / Submitted on. HR, CDO and manager views
+  // leave this off.
+  hideHistory?: boolean;
 }
 
 // Employee Review Details page's "Manager Evaluation" tab. Read-only for
@@ -64,6 +70,7 @@ const HRManagerEvaluationTab: React.FC<HRManagerEvaluationTabProps> = ({
   reviewPeriodId,
   onDecision,
   hideScores,
+  hideHistory,
 }) => {
   // The hook's internal Form.useWatch/setFieldsValue calls need a real
   // FormInstance to exist even though this read-only tab never renders a
@@ -211,8 +218,8 @@ const HRManagerEvaluationTab: React.FC<HRManagerEvaluationTabProps> = ({
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             {/* "Rejected" replaces "Submitted" until the manager resubmits;
                 an approval shows alongside it. */}
-            <StatusBadge status={approvalStatus === 'rejected' ? 'rejected' : 'submitted'} />
-            {approvalStatus === 'approved' && <StatusBadge status="approved" />}
+            <StatusBadge status={approvalStatus === 'rejected' && !hideHistory ? 'rejected' : 'submitted'} />
+            {approvalStatus === 'approved' && !hideHistory && <StatusBadge status="approved" />}
             {canDecide && (
               <>
                 <Button
@@ -267,7 +274,7 @@ const HRManagerEvaluationTab: React.FC<HRManagerEvaluationTabProps> = ({
               <div className="hr-employee-info-value">{new Date(submittedAt).toLocaleDateString()}</div>
             </div>
           )}
-          {approvalStatus && approvalBy && approvalAt && (
+          {!hideHistory && approvalStatus && approvalBy && approvalAt && (
             <div>
               <div className="hr-employee-info-label">{approvalStatus === 'approved' ? 'Approved' : 'Rejected'} by</div>
               <div className="hr-employee-info-value">
@@ -276,7 +283,7 @@ const HRManagerEvaluationTab: React.FC<HRManagerEvaluationTabProps> = ({
             </div>
           )}
         </div>
-        <ReviewHistory events={history || []} reviewLabel="Manager Review" />
+        {!hideHistory && <ReviewHistory events={history || []} reviewLabel="Manager Review" />}
         <ManagerEvaluationAnswers sections={readOnlySections} answers={submittedAnswers || {}} />
       </div>
       {!hideScores && (
